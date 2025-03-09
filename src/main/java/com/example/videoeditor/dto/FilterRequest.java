@@ -1,14 +1,15 @@
 package com.example.videoeditor.dto;
 
 import lombok.Data;
+import java.util.Map;
 
 @Data
 public class FilterRequest {
     private String videoPath;
-    private String segmentId;  // Add this field
-    private String filter;
+    private String segmentId;
+    private String filterType;
+    private Map<String, Object> filterParams;
 
-    // Getters and setters
     public String getVideoPath() {
         return videoPath;
     }
@@ -25,11 +26,19 @@ public class FilterRequest {
         this.segmentId = segmentId;
     }
 
-    public String getFilter() {
-        return filter;
+    public String getFilterType() {
+        return filterType;
     }
 
-    public void setFilter(String filter) {
-        this.filter = filter;
+    public void setFilterType(String filterType) {
+        this.filterType = filterType;
+    }
+
+    public Map<String, Object> getFilterParams() {
+        return filterParams;
+    }
+
+    public void setFilterParams(Map<String, Object> filterParams) {
+        this.filterParams = filterParams;
     }
 }

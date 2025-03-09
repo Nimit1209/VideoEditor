@@ -1,6 +1,5 @@
 package com.example.videoeditor.entity;
 
-import com.example.videoeditor.entity.User;
 import jakarta.persistence.*;
 import lombok.Data;
 import java.time.LocalDateTime;
@@ -28,6 +27,35 @@ public class Project {
 
     @Column(columnDefinition = "TEXT")
     private String timelineState; // JSON string of editing state
+
+    private Integer width;
+    private Integer height;
+
+    private String exportedVideoPath;
+
+    public String getExportedVideoPath() {
+        return exportedVideoPath;
+    }
+
+    public void setExportedVideoPath(String exportedVideoPath) {
+        this.exportedVideoPath = exportedVideoPath;
+    }
+
+    public Integer getWidth() {
+        return width;
+    }
+
+    public void setWidth(Integer width) {
+        this.width = width;
+    }
+
+    public Integer getHeight() {
+        return height;
+    }
+
+    public void setHeight(Integer height) {
+        this.height = height;
+    }
 
     public Long getId() {
         return id;

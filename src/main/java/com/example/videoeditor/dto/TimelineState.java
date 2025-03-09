@@ -10,10 +10,30 @@ public class TimelineState {
     private List<EditOperation> operations;
     private Map<String, Object> metadata;
 
+    // Assuming this is in a file like TimelineState.java
+    private Integer canvasWidth;
+    private Integer canvasHeight;
+
     public TimelineState() {
         this.segments = new ArrayList<>();
         this.operations = new ArrayList<>();
         this.metadata = new HashMap<>();
+    }
+
+    public Integer getCanvasWidth() {
+        return canvasWidth;
+    }
+
+    public void setCanvasWidth(Integer canvasWidth) {
+        this.canvasWidth = canvasWidth;
+    }
+
+    public Integer getCanvasHeight() {
+        return canvasHeight;
+    }
+
+    public void setCanvasHeight(Integer canvasHeight) {
+        this.canvasHeight = canvasHeight;
     }
 
     // Getters and setters

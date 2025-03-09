@@ -8,11 +8,7 @@ import com.example.videoeditor.repository.ProjectRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
 import java.io.*;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -78,10 +74,12 @@ public class VideoEditingService {
         }
     }
 
-    public Project createProject(User user, String name) throws JsonProcessingException {
+    public Project createProject(User user, String name, Integer width, Integer height) throws JsonProcessingException {
         Project project = new Project();
         project.setUser(user);
         project.setName(name);
+        project.setWidth(width);
+        project.setHeight(height);
         project.setStatus("DRAFT");
         project.setLastModified(LocalDateTime.now());
         project.setTimelineState(objectMapper.writeValueAsString(new TimelineState()));
@@ -213,17 +211,19 @@ public class VideoEditingService {
     }
 
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
-        System.out.println("Getting duration for: " + videoPath);
+        String fullPath = "videos/" + videoPath;
+
+        System.out.println("Getting duration for: " + fullPath);
 
         // Verify the file exists
-        File videoFile = new File(videoPath);
+        File videoFile = new File(fullPath);
         if (!videoFile.exists()) {
-            System.err.println("Video file does not exist: " + videoPath);
-            throw new IOException("Video file not found: " + videoPath);
+            System.err.println("Video file does not exist: " + fullPath);
+            throw new IOException("Video file not found: " + fullPath);
         }
 
         ProcessBuilder builder = new ProcessBuilder(
-                ffmpegPath, "-i", videoPath
+                ffmpegPath, "-i", fullPath
         );
         builder.redirectErrorStream(true);
         Process process = builder.start();
@@ -267,7 +267,6 @@ public class VideoEditingService {
     }
 
 
-
     public void saveProject(String sessionId) throws JsonProcessingException {
         EditSession session = getSession(sessionId);
         Project project = projectRepository.findById(session.getProjectId())
@@ -278,112 +277,490 @@ public class VideoEditingService {
         projectRepository.save(project);
     }
 
-    public ResponseEntity<Map<String, String>> exportProject(String sessionId) throws IOException, InterruptedException {
+    private EditSession getSession(String sessionId) {
+        return Optional.ofNullable(activeSessions.get(sessionId))
+                .orElseThrow(() -> new RuntimeException("No active session found"));
+    }
+
+
+
+    public void addVideoToTimeline(String sessionId, String videoPath) throws IOException, InterruptedException {
+        // Log the incoming request parameters
+        System.out.println("addVideoToTimeline called with sessionId: " + sessionId);
+        System.out.println("Video path: " + videoPath);
+
         EditSession session = getSession(sessionId);
-        TimelineState timeline = session.getTimelineState();
 
-        if (timeline.getSegments().isEmpty()) {
-            throw new RuntimeException("No video segments to export.");
+        if (session == null) {
+            System.err.println("No active session found for sessionId: " + sessionId);
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
         }
 
-        // Ensure the output directory exists
-        File outputDir = new File("edited_videos");
-        if (!outputDir.exists()) {
-            outputDir.mkdirs();
+        System.out.println("Session found, project ID: " + session.getProjectId());
+
+        try {
+
+            double duration = getVideoDuration(videoPath);
+            System.out.println("Actual video duration: " + duration);
+
+            // Create a video segment for the entire video
+            VideoSegment segment = new VideoSegment();
+            segment.setSourceVideoPath(videoPath);
+            segment.setStartTime(0);
+            segment.setEndTime(duration); // -1 indicates full duration
+
+            segment.setPositionX(0);
+            segment.setPositionY(0);
+            segment.setScale(1.0);
+
+            // Add to timeline
+            if (session.getTimelineState() == null) {
+                System.out.println("Timeline state was null, creating new one");
+                session.setTimelineState(new TimelineState());
+            }
+
+            session.getTimelineState().getSegments().add(segment);
+            System.out.println("Added segment to timeline, now have " +
+                    session.getTimelineState().getSegments().size() + " segments");
+
+            // Create an ADD operation for tracking
+            EditOperation addOperation = new EditOperation();
+            addOperation.setOperationType("ADD");
+            addOperation.setSourceVideoPath(videoPath);
+            addOperation.setParameters(Map.of("time", System.currentTimeMillis()));
+
+            session.getTimelineState().getOperations().add(addOperation);
+            session.setLastAccessTime(System.currentTimeMillis());
+
+            System.out.println("Successfully added video to timeline");
+        } catch (Exception e) {
+            System.err.println("Error in addVideoToTimeline: " + e.getMessage());
+            e.printStackTrace();
+            throw e;
+        }
+    }
+
+    public void updateVideoSegment(String sessionId, String segmentId,
+                                   Integer positionX, Integer positionY, Double scale) {
+        // Log the incoming request parameters
+        System.out.println("updateVideoSegment called with sessionId: " + sessionId);
+        System.out.println("Segment ID: " + segmentId);
+        System.out.println("Position X: " + positionX + ", Position Y: " + positionY + ", Scale: " + scale);
+
+        EditSession session = getSession(sessionId);
+
+        if (session == null) {
+            System.err.println("No active session found for sessionId: " + sessionId);
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
         }
 
-        // Generate a unique filename for the final output
-        String finalVideoId = UUID.randomUUID().toString();
-        String finalVideoPath = "edited_videos/final_" + finalVideoId + ".mp4";
+        System.out.println("Session found, project ID: " + session.getProjectId());
 
-        // Create a temporary file for concatenation
-        File concatFile = new File("temp_concat_" + finalVideoId + ".txt");
-        List<String> tempFiles = new ArrayList<>(); // Track temp files to delete later
-
-        try (PrintWriter writer = new PrintWriter(concatFile)) {
-            // Process each segment in the timeline
-            for (VideoSegment segment : timeline.getSegments()) {
-                // Process this segment with all its applicable operations
-                String processedPath = processSegment(segment, timeline.getOperations());
-                writer.println("file '" + processedPath + "'");
-
-                // Add to list of temp files if it's a processed segment (not original source)
-                if (processedPath.startsWith("edited_videos/segment_")) {
-                    tempFiles.add(processedPath);
-                }
+        // Find the segment with the given ID
+        VideoSegment segmentToUpdate = null;
+        for (VideoSegment segment : session.getTimelineState().getSegments()) {
+            if (segment.getId().equals(segmentId)) {
+                segmentToUpdate = segment;
+                break;
             }
         }
 
-        // Concatenate all processed segments into the final video
-        ProcessBuilder builder = new ProcessBuilder(
-                ffmpegPath, "-f", "concat", "-safe", "0",
-                "-i", concatFile.getAbsolutePath(),
-                "-c:v", "libx264",
-                "-c:a", "aac",
-                "-b:v", "5M",
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-                finalVideoPath
-        );
+        if (segmentToUpdate == null) {
+            throw new RuntimeException("No segment found with ID: " + segmentId);
+        }
 
-        executeFFmpegCommand(builder);
+        // Update the segment properties if provided
+        if (positionX != null) {
+            segmentToUpdate.setPositionX(positionX);
+        }
+
+        if (positionY != null) {
+            segmentToUpdate.setPositionY(positionY);
+        }
+
+        if (scale != null) {
+            segmentToUpdate.setScale(scale);
+        }
+
+        // Create an UPDATE operation for tracking
+        EditOperation updateOperation = new EditOperation();
+        updateOperation.setOperationType("UPDATE");
+        updateOperation.setSourceVideoPath(segmentToUpdate.getSourceVideoPath());
+
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("time", System.currentTimeMillis());
+        parameters.put("segmentId", segmentId);
+        if (positionX != null) parameters.put("positionX", positionX);
+        if (positionY != null) parameters.put("positionY", positionY);
+        if (scale != null) parameters.put("scale", scale);
+        updateOperation.setParameters(parameters);
+
+        session.getTimelineState().getOperations().add(updateOperation);
+        session.setLastAccessTime(System.currentTimeMillis());
+
+        System.out.println("Successfully updated video segment");
+    }
+
+    public File exportProject(String sessionId) throws IOException, InterruptedException {
+        EditSession session = getSession(sessionId);
+
+        // Check if session exists
+        if (session == null) {
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        // Get project details
+        Project project = projectRepository.findById(session.getProjectId())
+                .orElseThrow(() -> new RuntimeException("Project not found"));
+
+        // Create default output path
+        String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "") + ""
+                + System.currentTimeMillis() + ".mp4";
+        String outputPath = "exports/" + outputFileName;
+
+        // Ensure exports directory exists
+        File exportsDir = new File("exports");
+        if (!exportsDir.exists()) {
+            exportsDir.mkdirs();
+        }
+
+        // Render the final video
+        String exportedVideoPath = renderFinalVideo(session.getTimelineState(), outputPath, project.getWidth(), project.getHeight());
+
+        // Update project status to exported
+        project.setStatus("EXPORTED");
+        project.setLastModified(LocalDateTime.now());
+        project.setExportedVideoPath(exportedVideoPath);
+
+        try {
+            project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
+        } catch (JsonProcessingException e) {
+            System.err.println("Error saving timeline state: " + e.getMessage());
+            // Continue with export even if saving timeline state fails
+        }
+
+        projectRepository.save(project);
+
+        System.out.println("Project successfully exported to: " + exportedVideoPath);
+
+        // Return the File object as per your original implementation
+        return new File(exportedVideoPath);
+    }
+
+    private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight)
+            throws IOException, InterruptedException {
+
+        System.out.println("Rendering final video to: " + outputPath);
+
+        // Validate timeline
+        if (timelineState.getSegments() == null || timelineState.getSegments().isEmpty()) {
+            throw new RuntimeException("Cannot export empty timeline");
+        }
+
+        // Create a temporary directory for intermediate files
+        File tempDir = new File("temp");
+        if (!tempDir.exists()) {
+            tempDir.mkdirs();
+        }
+
+        // Create a list to store intermediate files
+        List<File> intermediateFiles = new ArrayList<>();
+
+        // Process each segment in the timeline
+        for (VideoSegment segment : timelineState.getSegments()) {
+            String videoPath = "videos/" + segment.getSourceVideoPath();
+
+            // Verify source video exists
+            File sourceVideo = new File(videoPath);
+            if (!sourceVideo.exists()) {
+                throw new IOException("Source video not found: " + videoPath);
+            }
+
+            // Create a temporary file for this segment
+            String tempFilename = "temp_" + UUID.randomUUID().toString() + ".mp4";
+            File tempFile = new File(tempDir, tempFilename);
+            intermediateFiles.add(tempFile);
+
+            // Get segment details
+            int positionX = segment.getPositionX();
+            int positionY = segment.getPositionY();
+            double scale = segment.getScale(); // Scale factor (e.g., 1.0 = original, 0.6 = 60%)
+
+
+//            TO BE TESTED
+            // Get all filters that apply to this segment
+            List<String> segmentFilters = getFiltersForSegment(timelineState, segment.getId());
+            System.out.println("Found " + segmentFilters.size() + " filters for segment " + segment.getId());
+
+            // Start building the filter_complex string
+            StringBuilder filterComplex = new StringBuilder();
+
+            // Add scaling filter
+            filterComplex.append("[0:v]");
+
+            // Apply all segment-specific filters first
+            if (!segmentFilters.isEmpty()) {
+                for (String filter : segmentFilters) {
+                    filterComplex.append(filter).append(",");
+                }
+            }
+
+            // Add scaling after filters
+            filterComplex.append("scale=iw*").append(scale).append(":ih*").append(scale).append("[scaled];");
+
+            // Create background and overlay
+            filterComplex.append("color=black:size=").append(canvasWidth).append("x").append(canvasHeight).append("[bg];");
+
+
+            // Calculate scaled dimensions
+            String scaleFilter = "scale=iw*" + scale + ":ih*" + scale + "[scaled]";
+
+            // Compute centered position with offset
+            String overlayX = "(W-w)/2+" + positionX;
+            String overlayY = "(H-h)/2+" + positionY;
+
+            filterComplex.append("[bg][scaled]overlay=x=").append(overlayX).append(":y=").append(overlayY);
+
+            // Build FFmpeg command for trimming, scaling, and positioning
+            List<String> command = new ArrayList<>();
+            command.add(ffmpegPath);
+            command.add("-i");
+            command.add(videoPath);
+
+            // Trim the segment
+            command.add("-ss");
+            command.add(String.valueOf(segment.getStartTime()));
+            if (segment.getEndTime() != -1) {
+                command.add("-to");
+                command.add(String.valueOf(segment.getEndTime()));
+            }
+
+            // Add the complex filter chain
+            command.add("-filter_complex");
+            command.add(filterComplex.toString());
+
+
+            // Position the segment with scaling
+            command.add("-filter_complex");
+            command.add("[0:v]" + scaleFilter + ";" +
+                    "color=black:size=" + canvasWidth + "x" + canvasHeight + "[bg];" +
+                    "[bg][scaled]overlay=x=" + overlayX + ":y=" + overlayY);
+
+            // Output the processed segment
+            command.add("-c:v");
+            command.add("libx264");
+            command.add("-c:a");
+            command.add("aac");
+            command.add("-y"); // Overwrite if exists
+            command.add(tempFile.getAbsolutePath());
+
+            // Execute the command
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+
+            // Log the process output
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("FFmpeg process: " + line);
+                }
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                throw new RuntimeException("FFmpeg process failed with exit code: " + exitCode);
+            }
+        }
+
+        // Create a temporary file for the FFmpeg concat script
+        File concatFile = File.createTempFile("ffmpeg-concat-", ".txt");
+        try (PrintWriter writer = new PrintWriter(new FileWriter(concatFile))) {
+            for (File file : intermediateFiles) {
+                writer.println("file '" + file.getAbsolutePath().replace("\\", "\\\\") + "'");
+            }
+        }
+
+        // Build FFmpeg command for concatenation
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+        command.add("-f");
+        command.add("concat");
+        command.add("-safe");
+        command.add("0");
+        command.add("-i");
+        command.add(concatFile.getAbsolutePath());
+
+        // Set video codec and quality
+        command.add("-c:v");
+        command.add("libx264");
+        command.add("-preset");
+        command.add("medium");
+        command.add("-crf");
+        command.add("22");
+
+        // Set audio codec
+        command.add("-c:a");
+        command.add("aac");
+        command.add("-b:a");
+        command.add("128k");
+
+        // Output file
+        command.add("-y"); // Overwrite if exists
+        command.add(outputPath);
+
+        // Execute concat command
+        System.out.println("Executing FFmpeg concat command: " + String.join(" ", command));
+        ProcessBuilder concatBuilder = new ProcessBuilder(command);
+        concatBuilder.redirectErrorStream(true);
+        Process concatProcess = concatBuilder.start();
+
+        // Log the concat process output
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(concatProcess.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("FFmpeg concat: " + line);
+            }
+        }
+
+        int exitCode = concatProcess.waitFor();
+        if (exitCode != 0) {
+            throw new RuntimeException("FFmpeg concat process failed with exit code: " + exitCode);
+        }
 
         // Clean up temporary files
         concatFile.delete();
-
-        // Delete all temporary segment files
-        for (String tempFile : tempFiles) {
-            try {
-                File file = new File(tempFile);
-                if (file.exists()) {
-                    boolean deleted = file.delete();
-                    if (!deleted) {
-                        System.out.println("Warning: Could not delete temporary file: " + tempFile);
-                    }
-                }
-            } catch (Exception e) {
-                System.err.println("Error deleting temporary file " + tempFile + ": " + e.getMessage());
-            }
+        for (File file : intermediateFiles) {
+            file.delete();
         }
-
-        // Return the path to the final video
-        Map<String, String> response = new HashMap<>();
-        response.put("videoPath", finalVideoPath);
-
-        return ResponseEntity.ok(response);
-    }
-    // Process a segment with all applicable operations
-    // Process a segment with all applicable operations
-    private String processSegment(VideoSegment segment, List<EditOperation> allOperations)
-            throws IOException, InterruptedException {
-
-        // Get the input path, ensuring it's properly formatted
-        String inputPath = segment.getSourceVideoPath();
-        if (!inputPath.contains("/")) {
-            inputPath = "videos/" + inputPath;
-        }
-
-        // Find all operations that apply to this segment
-        List<EditOperation> applicableOperations = allOperations.stream()
-                .filter(op -> isOperationApplicableToSegment(op, segment.getId()))
-                .collect(Collectors.toList());
-
-        // If no operations and no trimming needed, return the original path
-        if (applicableOperations.isEmpty() && segment.getStartTime() == 0 && segment.getEndTime() == -1) {
-            return inputPath;
-        }
-
-        // Create a temporary output path for this processed segment
-        String outputPath = "edited_videos/segment_" + UUID.randomUUID() + ".mp4";
-
-        // Build the FFmpeg command
-        List<String> command = buildFFmpegCommand(inputPath, outputPath, segment, applicableOperations);
-
-        // Execute the command
-        ProcessBuilder builder = new ProcessBuilder(command);
-        executeFFmpegCommand(builder);
 
         return outputPath;
+    }
+
+    // Helper method to get all filters for a specific segment
+    private List<String> getFiltersForSegment(TimelineState timelineState, String segmentId) {
+        return timelineState.getOperations().stream()
+                .filter(op -> "FILTER".equals(op.getOperationType()) &&
+                        segmentId.equals(op.getParameters().get("segmentId")))
+                .map(op -> (String) op.getParameters().get("filter"))
+                .collect(Collectors.toList());
+    }
+
+    // Enhanced method to apply filter with more options
+    public void applyFilter(String sessionId, String videoPath, String segmentId, String filterType, Map<String, Object> filterParams) {
+        EditSession session = getSession(sessionId);
+
+        // Find the specific segment in the timeline by ID
+        VideoSegment targetSegment = findSegmentById(session.getTimelineState(), segmentId);
+
+        if (targetSegment == null) {
+            throw new RuntimeException("Video segment not found with ID: " + segmentId);
+        }
+
+        // Build the appropriate filter string based on filter type and params
+        String filterString;
+
+        switch (filterType) {
+            case "brightness":
+                // brightness value typically between -1.0 and 1.0
+                double brightnessValue = Double.parseDouble(filterParams.getOrDefault("value", "0.0").toString());
+                filterString = "eq=brightness=" + brightnessValue;
+                break;
+
+            case "contrast":
+                // contrast value typically between -2.0 and 2.0
+                double contrastValue = Double.parseDouble(filterParams.getOrDefault("value", "1.0").toString());
+                filterString = "eq=contrast=" + contrastValue;
+                break;
+
+            case "saturation":
+                // saturation value typically between 0.0 and 3.0
+                double saturationValue = Double.parseDouble(filterParams.getOrDefault("value", "1.0").toString());
+                filterString = "eq=saturation=" + saturationValue;
+                break;
+
+            case "blur":
+                // sigma value typically between 1.0 and 20.0
+                double sigmaValue = Double.parseDouble(filterParams.getOrDefault("sigma", "5.0").toString());
+                filterString = "boxblur=" + sigmaValue + ":" + sigmaValue;
+                break;
+
+            case "sharpen":
+                filterString = "unsharp=5:5:1.0:5:5:0.0";
+                break;
+
+            case "grayscale":
+                filterString = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3";
+                break;
+
+            case "sepia":
+                filterString = "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131";
+                break;
+
+            case "mirror":
+                filterString = "hflip";
+                break;
+
+            case "rotate":
+                // rotation angle in degrees
+                int angle = Integer.parseInt(filterParams.getOrDefault("angle", "90").toString());
+                filterString = "rotate=" + angle + "*PI/180";
+                break;
+
+            case "custom":
+                // For advanced users who know FFmpeg filter syntax
+                filterString = filterParams.getOrDefault("value", "").toString();
+                break;
+
+            default:
+                throw new RuntimeException("Unsupported filter type: " + filterType);
+        }
+
+        // Create filter operation and associate it with the specific segment
+        EditOperation filterOperation = new EditOperation();
+        filterOperation.setOperationType("FILTER");
+        filterOperation.setSourceVideoPath(videoPath);
+
+        // Create a map with both the filter and the segmentId to link them
+        Map<String, Object> params = new HashMap<>();
+        params.put("filter", filterString);
+        params.put("filterType", filterType);
+        params.put("filterParams", filterParams);
+        params.put("segmentId", segmentId);
+        params.put("appliedAt", System.currentTimeMillis());
+        params.put("filterId", UUID.randomUUID().toString());  // Generate unique ID for each filter
+
+        filterOperation.setParameters(params);
+
+        // Add to timeline state operations
+        session.getTimelineState().getOperations().add(filterOperation);
+        session.setLastAccessTime(System.currentTimeMillis());
+
+        System.out.println("Applied filter: " + filterType + " (" + filterString + ") to video segment: " + segmentId);
+    }
+
+    // Method to get detailed filter information for UI display
+    public List<Map<String, Object>> getFilterDetailsForSegment(String sessionId, String segmentId) {
+        EditSession session = getSession(sessionId);
+
+        return session.getTimelineState().getOperations().stream()
+                .filter(op -> "FILTER".equals(op.getOperationType()) &&
+                        segmentId.equals(op.getParameters().get("segmentId")))
+                .map(op -> {
+                    Map<String, Object> filterDetails = new HashMap<>();
+                    filterDetails.put("filterId", op.getParameters().get("filterId"));
+                    filterDetails.put("filterType", op.getParameters().get("filterType"));
+                    filterDetails.put("filterString", op.getParameters().get("filter"));
+                    filterDetails.put("appliedAt", op.getParameters().get("appliedAt"));
+
+                    // Include original parameters if available
+                    if (op.getParameters().containsKey("filterParams")) {
+                        filterDetails.put("parameters", op.getParameters().get("filterParams"));
+                    }
+
+                    return filterDetails;
+                })
+                .collect(Collectors.toList());
     }
 
     // Determine if an operation applies to a specific segment
@@ -410,105 +787,6 @@ public class VideoEditingService {
         // Return false by default for unknown operations
         return false;
     }
-
-    // Build an FFmpeg command for processing a segment
-    private List<String> buildFFmpegCommand(String inputPath, String outputPath,
-                                            VideoSegment segment, List<EditOperation> operations) {
-        List<String> command = new ArrayList<>();
-        command.add(ffmpegPath);
-        command.add("-i");
-        command.add(inputPath);
-
-        // Add segment start time
-        if (segment.getStartTime() > 0) {
-            command.add("-ss");
-            command.add(String.valueOf(segment.getStartTime()));
-        }
-
-        // Add segment duration if an end time is specified
-        if (segment.getEndTime() > 0) {
-            command.add("-t");
-            command.add(String.valueOf(segment.getEndTime() - segment.getStartTime()));
-        }
-
-        // Extract all filter operations
-        List<String> filters = operations.stream()
-                .filter(op -> "FILTER".equals(op.getOperationType()))
-                .map(op -> (String) op.getParameters().get("filter"))
-                .collect(Collectors.toList());
-
-        // Add video filters if any
-        if (!filters.isEmpty()) {
-            command.add("-vf");
-            command.add(String.join(",", filters));
-        }
-
-        // Add future operation types here with appropriate FFmpeg parameters
-
-        // Output options
-        command.add("-c:a");
-        command.add("copy");
-        command.add(outputPath);
-
-        return command;
-    }
-    // Helper method to combine multiple filters into a single FFmpeg filter chain
-    private String combineFilters(List<EditOperation> filterOperations) {
-        return filterOperations.stream()
-                .map(op -> (String) op.getParameters().get("filter"))
-                .collect(Collectors.joining(","));
-    }
-
-    // Get all filter operations for a specific segment
-    private List<EditOperation> getFilterOperationsForSegment(String segmentId, TimelineState timelineState) {
-        return timelineState.getOperations().stream()
-                .filter(op -> "FILTER".equals(op.getOperationType()) &&
-                        segmentId.equals(op.getParameters().get("segmentId")))
-                .collect(Collectors.toList());
-    }
-
-    private File renderFinalVideo(List<String> segmentPaths, String outputPath) throws IOException, InterruptedException {
-        File outputDir = new File("edited_videos");
-        if (!outputDir.exists()) {
-            outputDir.mkdirs();
-        }
-
-        File concatFile = new File("temp_concat_export.txt"); // Ensure correct path
-        try (PrintWriter writer = new PrintWriter(concatFile)) {
-            for (String path : segmentPaths) {
-                // Path handling logic (as fixed in previous response)  FOR WINDOWS
-//                if (!path.contains("/") && !path.contains("\\")) {
-//                    path = "videos/" + path;
-//                }
-                if (!path.contains("/")) { // If it's just a filename, prepend correct path
-                    path = "videos/" + path;
-                }
-//                // If `path` is just a filename, prepend the full directory path if needed
-//                if (!path.startsWith("D:/") && !path.startsWith("edited_videos/")) {
-//                    path = "D:/videoEditor/videos/" + path;
-//                }
-                writer.println("file '" + path + "'");
-            }
-        }
-
-        ProcessBuilder builder = new ProcessBuilder(
-                ffmpegPath, "-f", "concat", "-safe", "0",
-                "-i", concatFile.getAbsolutePath(),
-                "-c:v", "libx264", // Use H.264 codec for video
-                "-c:a", "aac",     // Use AAC codec for audio
-                "-b:v", "5M",      // Set video bitrate
-                "-pix_fmt", "yuv420p", // Use common pixel format
-                "-movflags", "+faststart", // Optimize for web streaming
-                outputPath
-        );
-        System.out.println("Executing FFmpeg command: " + String.join(" ", builder.command())); // Logging command
-        executeFFmpegCommand(builder);
-
-        concatFile.delete();
-        return new File(outputPath);
-    }
-
-
     private void executeFFmpegCommand(ProcessBuilder builder) throws IOException, InterruptedException {
         builder.redirectErrorStream(true);
         Process process = builder.start();
@@ -526,111 +804,6 @@ public class VideoEditingService {
         }
     }
 
-    @Scheduled(fixedRate = 3600000) // Every hour
-    public void cleanupExpiredSessions() {
-        long expiryTime = System.currentTimeMillis() - 3600000;
-        activeSessions.entrySet().removeIf(entry ->
-                entry.getValue().getLastAccessTime() < expiryTime);
-    }
-
-    private EditSession getSession(String sessionId) {
-        return Optional.ofNullable(activeSessions.get(sessionId))
-                .orElseThrow(() -> new RuntimeException("No active session found"));
-    }
-
-
-
-    public void addVideoToTimeline(String sessionId, String videoPath) {
-        // Log the incoming request parameters
-        System.out.println("addVideoToTimeline called with sessionId: " + sessionId);
-        System.out.println("Video path: " + videoPath);
-
-        EditSession session = getSession(sessionId);
-
-        if (session == null) {
-            System.err.println("No active session found for sessionId: " + sessionId);
-            throw new RuntimeException("No active session found for sessionId: " + sessionId);
-        }
-
-        System.out.println("Session found, project ID: " + session.getProjectId());
-
-        try {
-            // Create a video segment for the entire video - use the constructor
-            VideoSegment segment = new VideoSegment();  // This will set UUID automatically
-            segment.setSourceVideoPath(videoPath);
-            segment.setStartTime(0);
-            segment.setEndTime(-1); // -1 indicates full duration
-            // No need to set ID as it's done in the constructor
-
-            // Add to timeline
-            if (session.getTimelineState() == null) {
-                System.out.println("Timeline state was null, creating new one");
-                session.setTimelineState(new TimelineState());
-            }
-
-            session.getTimelineState().getSegments().add(segment);
-            System.out.println("Added segment to timeline, now have " +
-                    session.getTimelineState().getSegments().size() + " segments");
-
-            // Create an ADD operation for tracking
-            EditOperation addOperation = new EditOperation();
-            addOperation.setOperationType("ADD");
-            addOperation.setSourceVideoPath(videoPath);
-            addOperation.setParameters(Map.of(
-                    "time", System.currentTimeMillis(),
-                    "segmentId", segment.getId()  // Use the ID from the segment
-            ));
-
-            session.getTimelineState().getOperations().add(addOperation);
-            session.setLastAccessTime(System.currentTimeMillis());
-
-            System.out.println("Successfully added video to timeline with segment ID: " + segment.getId());
-        } catch (Exception e) {
-            System.err.println("Error in addVideoToTimeline: " + e.getMessage());
-            e.printStackTrace();
-            throw e;
-        }
-    }
-
-    public void applyFilter(String sessionId, String videoPath, String segmentId, String filter) {
-        EditSession session = getSession(sessionId);
-
-        // Find the specific segment in the timeline by ID
-        VideoSegment targetSegment = findSegmentById(session.getTimelineState(), segmentId);
-
-        if (targetSegment == null) {
-            throw new RuntimeException("Video segment not found with ID: " + segmentId);
-        }
-
-        // Create filter operation and associate it with the specific segment
-        EditOperation filterOperation = new EditOperation();
-        filterOperation.setOperationType("FILTER");
-        filterOperation.setSourceVideoPath(videoPath);
-
-        // Create a map with both the filter and the segmentId to link them
-        Map<String, Object> params = new HashMap<>();
-        params.put("filter", filter);
-        params.put("segmentId", segmentId);
-        params.put("appliedAt", System.currentTimeMillis());
-        params.put("filterId", UUID.randomUUID().toString());  // Generate unique ID for each filter
-
-        filterOperation.setParameters(params);
-
-        // Add to timeline state operations
-        session.getTimelineState().getOperations().add(filterOperation);
-        session.setLastAccessTime(System.currentTimeMillis());
-
-        System.out.println("Applied filter: " + filter + " to video segment: " + segmentId);
-    }
-
-    // Helper method to find a segment by its source video path
-    private VideoSegment findSegmentByPath(TimelineState timelineState, String videoPath) {
-        return timelineState.getSegments().stream()
-                .filter(segment -> segment.getSourceVideoPath().equals(videoPath))
-                .findFirst()
-                .orElse(null);
-    }
-
     // Helper method to find a segment by its ID
     private VideoSegment findSegmentById(TimelineState timelineState, String segmentId) {
         return timelineState.getSegments().stream()
@@ -639,27 +812,105 @@ public class VideoEditingService {
                 .orElse(null);
     }
 
-    // Method to get active filters for a specific segment - useful for UI display
-    public List<String> getActiveFiltersForSegment(String sessionId, String segmentId) {
-        EditSession session = getSession(sessionId);
+//    // Enhanced method to process a segment with all operations including filters
+//    private String processSegment(VideoSegment segment, List<EditOperation> allOperations)
+//            throws IOException, InterruptedException {
+//
+//        // Get the input path, ensuring it's properly formatted
+//        String inputPath = segment.getSourceVideoPath();
+//        if (!inputPath.contains("/")) {
+//            inputPath = "videos/" + inputPath;
+//        }
+//
+//        // Find all operations that apply to this segment
+//        List<EditOperation> applicableOperations = allOperations.stream()
+//                .filter(op -> isOperationApplicableToSegment(op, segment.getId()))
+//                .collect(Collectors.toList());
+//
+//        // If no operations and no trimming needed, return the original path
+//        if (applicableOperations.isEmpty() && segment.getStartTime() == 0 && segment.getEndTime() == -1) {
+//            return inputPath;
+//        }
+//
+//        // Create a temporary output path for this processed segment
+//        String outputPath = "edited_videos/segment_" + UUID.randomUUID() + ".mp4";
+//
+//        // Extract filter operations
+//        List<EditOperation> filterOperations = applicableOperations.stream()
+//                .filter(op -> "FILTER".equals(op.getOperationType()))
+//                .collect(Collectors.toList());
+//
+//        // Build the filter complex expression
+//        StringBuilder filterComplex = new StringBuilder();
+//        if (!filterOperations.isEmpty()) {
+//            filterComplex.append("[0:v]");
+//
+//            // Add each filter in sequence
+//            for (int i = 0; i < filterOperations.size(); i++) {
+//                EditOperation op = filterOperations.get(i);
+//                filterComplex.append((String) op.getParameters().get("filter"));
+//
+//                // Add comma if not the last filter
+//                if (i < filterOperations.size() - 1) {
+//                    filterComplex.append(",");
+//                }
+//            }
+//
+//            // Name the output
+//            filterComplex.append("[filtered]");
+//        }
+//
+//        // Build the FFmpeg command
+//        List<String> command = new ArrayList<>();
+//        command.add(ffmpegPath);
+//        command.add("-i");
+//        command.add(inputPath);
+//
+//        // Add segment start time
+//        if (segment.getStartTime() > 0) {
+//            command.add("-ss");
+//            command.add(String.valueOf(segment.getStartTime()));
+//        }
+//
+//        // Add segment duration if an end time is specified
+//        if (segment.getEndTime() > 0) {
+//            command.add("-t");
+//            command.add(String.valueOf(segment.getEndTime() - segment.getStartTime()));
+//        }
+//
+//        // Add filter complex if we have filters
+//        if (filterComplex.length() > 0) {
+//            command.add("-filter_complex");
+//            command.add(filterComplex.toString());
+//            command.add("-map");
+//            command.add("[filtered]");
+//            command.add("-map");
+//            command.add("0:a?"); // Map audio if it exists
+//        }
+//
+//        // Output options
+//        command.add("-c:v");
+//        command.add("libx264");  // Use H.264 video codec
+//        command.add("-c:a");
+//        command.add("aac");
+//        command.add("-y"); // Overwrite if file exists
+//        command.add(outputPath);
+//
+//        // Add quality settings
+//        command.add("-preset");
+//        command.add("medium");   // Balance between encoding speed and quality
+//        command.add("-crf");
+//        command.add("23");       // Constant Rate Factor - lower is better quality
+//
+//        // Log the final command for debugging
+//        System.out.println("FFmpeg command: " + String.join(" ", command));
+//
+//        // Execute the command
+//        executeFFmpegCommand(new ProcessBuilder(command));
+//
+//        return outputPath;
+//    }
 
-        return session.getTimelineState().getOperations().stream()
-                .filter(op -> "FILTER".equals(op.getOperationType()) &&
-                        segmentId.equals(op.getParameters().get("segmentId")))
-                .map(op -> (String) op.getParameters().get("filter"))
-                .collect(Collectors.toList());
-    }
 
-    // Method to remove a filter from a segment
-    public void removeFilter(String sessionId, String segmentId, String filterId) {
-        EditSession session = getSession(sessionId);
 
-        // Remove the specific filter operation
-        session.getTimelineState().getOperations().removeIf(op ->
-                "FILTER".equals(op.getOperationType()) &&
-                        segmentId.equals(op.getParameters().get("segmentId")) &&
-                        filterId.equals(op.getParameters().get("filterId")));
-
-        session.setLastAccessTime(System.currentTimeMillis());
-    }
 }

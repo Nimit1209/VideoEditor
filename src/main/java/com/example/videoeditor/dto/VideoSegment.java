@@ -6,22 +6,41 @@ import java.util.UUID;
 
 @Data
 public class VideoSegment {
-    private String id;  // Unique identifier for tracking this segment
     private String sourceVideoPath;
     private double startTime;
-    private double endTime; // -1 for full duration
+    private double endTime;
+    private String id;
 
+    private Integer positionX = 0;
+    private Integer positionY = 0;
+    private Double scale = 1.0;
 
-    public VideoSegment(){
-        this.id= UUID.randomUUID().toString();
+    public Integer getPositionX() {
+        return positionX;
     }
-    // Getters and setters
-    public String getId() {
-        return id;
+
+    public void setPositionX(Integer positionX) {
+        this.positionX = positionX;
     }
 
-    public void setId(String id) {
-        this.id = id;
+    public Integer getPositionY() {
+        return positionY;
+    }
+
+    public void setPositionY(Integer positionY) {
+        this.positionY = positionY;
+    }
+
+    public Double getScale() {
+        return scale;
+    }
+
+    public void setScale(Double scale) {
+        this.scale = scale;
+    }
+
+    public VideoSegment() {
+        this.id = UUID.randomUUID().toString(); // Generate unique ID on creation
     }
 
     public String getSourceVideoPath() {
@@ -46,5 +65,13 @@ public class VideoSegment {
 
     public void setEndTime(double endTime) {
         this.endTime = endTime;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
     }
 }
