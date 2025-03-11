@@ -486,8 +486,6 @@ public class VideoEditingService {
             int positionY = segment.getPositionY();
             double scale = segment.getScale(); // Scale factor (e.g., 1.0 = original, 0.6 = 60%)
 
-
-//            TO BE TESTED
             // Get all filters that apply to this segment
             List<String> segmentFilters = getFiltersForSegment(timelineState, segment.getId());
             System.out.println("Found " + segmentFilters.size() + " filters for segment " + segment.getId());
@@ -497,6 +495,8 @@ public class VideoEditingService {
 
             // Add scaling filter
             filterComplex.append("[0:v]");
+
+
 
             // Apply all segment-specific filters first
             if (!segmentFilters.isEmpty()) {
@@ -707,6 +707,314 @@ public class VideoEditingService {
                 filterString = "rotate=" + angle + "*PI/180";
                 break;
 
+            // Advanced color grading filters
+            case "lut":
+                // Apply a 3D LUT file for professional color grading
+                String lutFile = filterParams.getOrDefault("file", "").toString();
+                filterString = "lut3d=" + lutFile;
+                break;
+
+            case "colorbalance":
+                // Professional color balance adjustments for shadows, midtones, and highlights
+                double rShadows = Double.parseDouble(filterParams.getOrDefault("rShadows", "0.0").toString());
+                double gShadows = Double.parseDouble(filterParams.getOrDefault("gShadows", "0.0").toString());
+                double bShadows = Double.parseDouble(filterParams.getOrDefault("bShadows", "0.0").toString());
+                double rMidtones = Double.parseDouble(filterParams.getOrDefault("rMidtones", "0.0").toString());
+                double gMidtones = Double.parseDouble(filterParams.getOrDefault("gMidtones", "0.0").toString());
+                double bMidtones = Double.parseDouble(filterParams.getOrDefault("bMidtones", "0.0").toString());
+                double rHighlights = Double.parseDouble(filterParams.getOrDefault("rHighlights", "0.0").toString());
+                double gHighlights = Double.parseDouble(filterParams.getOrDefault("gHighlights", "0.0").toString());
+                double bHighlights = Double.parseDouble(filterParams.getOrDefault("bHighlights", "0.0").toString());
+
+                filterString = "colorbalance=rs=" + rShadows + ":gs=" + gShadows + ":bs=" + bShadows +
+                        ":rm=" + rMidtones + ":gm=" + gMidtones + ":bm=" + bMidtones +
+                        ":rh=" + rHighlights + ":gh=" + gHighlights + ":bh=" + bHighlights;
+                break;
+
+            case "curves":
+                // Apply custom RGB curves for precise color adjustments
+                String curvesMaster = filterParams.getOrDefault("master", "0/0 1/1").toString();
+                String curvesRed = filterParams.getOrDefault("red", "0/0 1/1").toString();
+                String curvesGreen = filterParams.getOrDefault("green", "0/0 1/1").toString();
+                String curvesBlue = filterParams.getOrDefault("blue", "0/0 1/1").toString();
+
+                filterString = "curves=master='" + curvesMaster + "':red='" + curvesRed +
+                        "':green='" + curvesGreen + "':blue='" + curvesBlue + "'";
+                break;
+
+            case "vibrance":
+                // Intelligent saturation that preserves skin tones
+                double vibranceValue = Double.parseDouble(filterParams.getOrDefault("value", "0.5").toString());
+                // Implement using a combination of HSL adjustment and masks
+                filterString = "vibrance=" + vibranceValue;
+                break;
+
+            // Cinematic effects
+            case "vignette":
+                // Darkens the corners of the frame
+                double vignetteAmount = Double.parseDouble(filterParams.getOrDefault("amount", "0.3").toString());
+                filterString = "vignette=angle=PI/4:x0=0.5:y0=0.5:mode=quadratic:amount=" + vignetteAmount;
+                break;
+
+            case "filmgrain":
+                // Adds realistic film grain
+                double grainAmount = Double.parseDouble(filterParams.getOrDefault("amount", "0.1").toString());
+                filterString = "noise=c0s=" + grainAmount + ":c1s=" + grainAmount + ":c2s=" + grainAmount + ":allf=t";
+                break;
+
+            case "cinematic":
+                // Letterbox with anamorphic-style color grading
+                String aspectRatio = filterParams.getOrDefault("aspectRatio", "2.39:1").toString();
+                filterString = "drawbox=y=0:w=iw:h=iw/(DAR*" + aspectRatio.replace(":", "/") + "):t=fill:c=black," +
+                        "drawbox=y=ih-iw/(DAR*" + aspectRatio.replace(":", "/") + "):w=iw:h=iw/(DAR*" + aspectRatio.replace(":", "/") + "):t=fill:c=black," +
+                        "eq=contrast=1.1:saturation=0.85:brightness=0.05";
+                break;
+
+            // Light effects
+            case "glow":
+                // Adds a subtle glow to bright areas
+                double glowIntensity = Double.parseDouble(filterParams.getOrDefault("intensity", "0.3").toString());
+                double glowRadius = Double.parseDouble(filterParams.getOrDefault("radius", "3.0").toString());
+                filterString = "glow=strength=" + glowIntensity + ":radius=" + glowRadius;
+                break;
+
+            case "lensdistortion":
+                // Adds lens barrel or pincushion distortion
+                double k1 = Double.parseDouble(filterParams.getOrDefault("k1", "0.1").toString());
+                double k2 = Double.parseDouble(filterParams.getOrDefault("k2", "0.0").toString());
+                filterString = "lenscorrection=k1=" + k1 + ":k2=" + k2;
+                break;
+
+            case "lensflare":
+                // Simulates lens flare effect
+                double intensity = Double.parseDouble(filterParams.getOrDefault("intensity", "0.5").toString());
+                double posX = Double.parseDouble(filterParams.getOrDefault("posX", "0.5").toString());
+                double posY = Double.parseDouble(filterParams.getOrDefault("posY", "0.3").toString());
+                filterString = "lensflare=x=" + posX + ":y=" + posY + ":intensity=" + intensity;
+                break;
+
+            // Stylistic effects
+            case "bleachbypass":
+                // High-contrast, desaturated look popular in films
+                filterString = "curves=master='0/0 0.25/0.15 0.5/0.35 0.75/0.8 1/1',eq=saturation=0.4:contrast=1.4";
+                break;
+
+            case "duotone":
+                // Creates a two-tone color effect
+                String highlight = filterParams.getOrDefault("highlight", "ffffff").toString();
+                String shadow = filterParams.getOrDefault("shadow", "000000").toString();
+                filterString = "lut=r='clipval*" + Integer.parseInt(highlight.substring(0, 2), 16) + "/255 + (1-clipval)*"
+                        + Integer.parseInt(shadow.substring(0, 2), 16) + "/255':g='clipval*"
+                        + Integer.parseInt(highlight.substring(2, 4), 16) + "/255 + (1-clipval)*"
+                        + Integer.parseInt(shadow.substring(2, 4), 16) + "/255':b='clipval*"
+                        + Integer.parseInt(highlight.substring(4, 6), 16) + "/255 + (1-clipval)*"
+                        + Integer.parseInt(shadow.substring(4, 6), 16) + "/255'";
+                break;
+
+            case "tiltshift":
+                // Simulates a tilt-shift miniature effect
+                double blurAmount = Double.parseDouble(filterParams.getOrDefault("blur", "10").toString());
+                double centerY = Double.parseDouble(filterParams.getOrDefault("centerY", "0.5").toString());
+                double width = Double.parseDouble(filterParams.getOrDefault("width", "0.2").toString());
+                filterString = "tiltshift=center_y=" + centerY + ":inner_radius=" + width + ":outer_radius=" + (width * 3) + ":angle=0:bluramount=" + blurAmount;
+                break;
+
+            // Utility filters
+            case "stabilize":
+                // Video stabilization
+                double smoothing = Double.parseDouble(filterParams.getOrDefault("smoothing", "10").toString());
+                filterString = "deshake=rx=64:ry=64:blocksize=16:smooth=" + smoothing;
+                break;
+
+            case "denoise":
+                // Noise reduction
+                double strength = Double.parseDouble(filterParams.getOrDefault("strength", "5").toString());
+                filterString = "nlmeans=s=" + strength;
+                break;
+
+            case "sharpenmask":
+                // Advanced sharpening with masking
+                double amount = Double.parseDouble(filterParams.getOrDefault("amount", "3.0").toString());
+                double radius = Double.parseDouble(filterParams.getOrDefault("radius", "1.0").toString());
+                double threshold = Double.parseDouble(filterParams.getOrDefault("threshold", "0.05").toString());
+                filterString = "unsharp=luma_msize_x=" + radius + ":luma_msize_y=" + radius +
+                        ":luma_amount=" + amount + ":chroma_msize_x=" + radius +
+                        ":chroma_msize_y=" + radius + ":chroma_amount=" + (amount * 0.5) +
+                        ":alpha_msize_x=" + radius + ":alpha_msize_y=" + radius +
+                        ":alpha_amount=" + (amount * 0.5) + ":luma_threshold=" + threshold;
+                break;
+
+            // NEW FILTERS - TIME AND MOTION EFFECTS
+            case "slowmotion":
+                // Create smooth slow motion effect
+                double factor = Double.parseDouble(filterParams.getOrDefault("factor", "2.0").toString());
+                filterString = "setpts=" + factor + "*PTS";
+                break;
+
+            case "timelapse":
+                // Create timelapse/fast motion effect
+                double speed = Double.parseDouble(filterParams.getOrDefault("speed", "8.0").toString());
+                filterString = "setpts=PTS/" + speed;
+                break;
+
+            case "motionblur":
+                // Add motion blur effect
+                int frames = Integer.parseInt(filterParams.getOrDefault("frames", "5").toString());
+                double opacity = Double.parseDouble(filterParams.getOrDefault("opacity", "0.2").toString());
+                filterString = "tmix=frames=" + frames + ":weights='";
+                for (int i = 0; i < frames; i++) {
+                    filterString += opacity;
+                    if (i < frames - 1) filterString += " ";
+                }
+                filterString += "'";
+                break;
+
+            case "freeze":
+                // Freeze frame effect
+                String timeStr = filterParams.getOrDefault("time", "0").toString();
+                filterString = "freeze=first";
+                if (!timeStr.equals("0")) {
+                    double time = Double.parseDouble(timeStr);
+                    filterString = "select='eq(n," + Math.round(time * 25) + ")',freeze";
+                }
+                break;
+
+            // NEW FILTERS - ADVANCED COLOR EFFECTS
+            case "crossprocess":
+                // Cross-processing effect popular in film photography
+                filterString = "curves=r='0/0.05 0.5/0.5 1/0.95':g='0/0 0.5/0.4 1/0.95':b='0/0.1 0.5/0.5 1/0.9',eq=saturation=1.3:contrast=1.2";
+                break;
+
+            case "splittonemix":
+                // Professional split toning for highlights and shadows
+                String highlightColor = filterParams.getOrDefault("highlight", "ffeb3b").toString();
+                String shadowColor = filterParams.getOrDefault("shadow", "3f51b5").toString();
+                double balance = Double.parseDouble(filterParams.getOrDefault("balance", "0.5").toString());
+
+                // Convert hex colors to RGB values for highlights
+                int hR = Integer.parseInt(highlightColor.substring(0, 2), 16);
+                int hG = Integer.parseInt(highlightColor.substring(2, 4), 16);
+                int hB = Integer.parseInt(highlightColor.substring(4, 6), 16);
+
+                // Convert hex colors to RGB values for shadows
+                int sR = Integer.parseInt(shadowColor.substring(0, 2), 16);
+                int sG = Integer.parseInt(shadowColor.substring(2, 4), 16);
+                int sB = Integer.parseInt(shadowColor.substring(4, 6), 16);
+
+                filterString = "tinterlace=mode=4,curves=r='0/(" + sR + "/255) " + balance + "/0.5 1/(" + hR + "/255)':" +
+                        "g='0/(" + sG + "/255) " + balance + "/0.5 1/(" + hG + "/255)':" +
+                        "b='0/(" + sB + "/255) " + balance + "/0.5 1/(" + hB + "/255)'";
+                break;
+
+            case "enhanceselective":
+                // Selective color enhancement (similar to Lightroom's HSL panel)
+                String colorRange = filterParams.getOrDefault("color", "red").toString();
+                double hueShift = Double.parseDouble(filterParams.getOrDefault("hue", "0.0").toString());
+                double satBoost = Double.parseDouble(filterParams.getOrDefault("saturation", "1.2").toString());
+                double lumAdjust = Double.parseDouble(filterParams.getOrDefault("luminance", "0.0").toString());
+
+                // Define color ranges in HSV
+                Map<String, double[]> colorRanges = new HashMap<>();
+                colorRanges.put("red", new double[]{0, 0.1, 0.9, 1.0});
+                colorRanges.put("orange", new double[]{0.08, 0.17, 0, 0});
+                colorRanges.put("yellow", new double[]{0.15, 0.25, 0, 0});
+                colorRanges.put("green", new double[]{0.25, 0.45, 0, 0});
+                colorRanges.put("aqua", new double[]{0.45, 0.55, 0, 0});
+                colorRanges.put("blue", new double[]{0.55, 0.65, 0, 0});
+                colorRanges.put("purple", new double[]{0.65, 0.75, 0, 0});
+                colorRanges.put("magenta", new double[]{0.75, 0.85, 0, 0});
+
+                double[] range = colorRanges.getOrDefault(colorRange, new double[]{0, 0.1, 0.9, 1.0});
+
+                // Create HSV-based color adjustment
+                filterString = "hsvkey=h=" + range[0] + ":" + range[1] + ":s=0:1:v=0:1:soft=1," +
+                        "hue=h_expr=" + hueShift + "*PI:s_expr=VAL*" + satBoost + ":v_expr=VAL+" + lumAdjust + "," +
+                        "hsvhold";
+                break;
+
+            // NEW FILTERS - TRANSITIONS
+            case "fadeintransition":
+                // Fade in from black
+                double duration = Double.parseDouble(filterParams.getOrDefault("duration", "1.0").toString());
+                filterString = "fade=t=in:st=0:d=" + duration;
+                break;
+
+            case "fadeouttransition":
+                // Fade out to black
+                double outDuration = Double.parseDouble(filterParams.getOrDefault("duration", "1.0").toString());
+                String position = filterParams.getOrDefault("position", "end").toString();
+                if (position.equals("end")) {
+                    filterString = "fade=t=out:d=" + outDuration;
+                } else {
+                    double startTime = Double.parseDouble(filterParams.getOrDefault("startTime", "0.0").toString());
+                    filterString = "fade=t=out:st=" + startTime + ":d=" + outDuration;
+                }
+                break;
+
+            case "whipdissolve":
+                // Fast dissolve transition effect
+                double wipeAngle = Double.parseDouble(filterParams.getOrDefault("angle", "45.0").toString());
+                double wipeDuration = Double.parseDouble(filterParams.getOrDefault("duration", "0.5").toString());
+                filterString = "wipeleft=0.5:duration=" + wipeDuration + ":angle=" + wipeAngle;
+                break;
+
+            // NEW FILTERS - CREATIVE DISTORTIONS
+            case "pixelate":
+                // Mosaic/pixelation effect
+                int blockSize = Integer.parseInt(filterParams.getOrDefault("blockSize", "16").toString());
+                filterString = "pixelize=w=" + blockSize + ":h=" + blockSize;
+                break;
+
+            case "watercolor":
+                // Artistic watercolor effect
+                double simplify = Double.parseDouble(filterParams.getOrDefault("simplify", "5.0").toString());
+                double pastelize = Double.parseDouble(filterParams.getOrDefault("pastelize", "0.5").toString());
+                filterString = "boxblur=luma_radius=" + simplify + ":luma_power=1:enable='between(t,0,999)'," +
+                        "edgedetect=low=0.1:high=0.4:mode=colormix:enable='between(t,0,999)'," +
+                        "eq=saturation=" + (1 + pastelize) + ":contrast=1.1:brightness=0.05:enable='between(t,0,999)'";
+                break;
+
+            case "dreamy":
+                // Dreamy soft ethereal effect
+                double dreamGlow = Double.parseDouble(filterParams.getOrDefault("glow", "0.3").toString());
+                double dreamBlur = Double.parseDouble(filterParams.getOrDefault("blur", "3.0").toString());
+                double dreamSaturation = Double.parseDouble(filterParams.getOrDefault("saturation", "1.1").toString());
+                filterString = "gblur=sigma=" + dreamBlur + ":steps=3,split[a][b];" +
+                        "[a]lutrgb=r=.95*val:g=.95*val:b=1.05*val,tonemap=reinhard," +
+                        "eq=brightness=0.015:saturation=" + dreamSaturation + "[a1];" +
+                        "[b]lutyuv=y=1.5*val:u=val:v=val[b1];" +
+                        "[a1][b1]blend=all_mode=overlay:all_opacity=" + dreamGlow;
+                break;
+
+            // NEW FILTERS - BROADCAST STANDARD CORRECTIONS
+            case "broadcast":
+                // Broadcast-safe color correction
+                filterString = "normalize=blackpt=16:whitept=235:strength=1," +
+                        "vectorscope=m=color3:g=green:b=0.75:e=zebra";
+                break;
+
+            case "colorgradepreset":
+                // Professional color grade presets
+                String preset = filterParams.getOrDefault("preset", "neutral").toString();
+
+                Map<String, String> presets = new HashMap<>();
+                presets.put("neutral", "");
+                presets.put("warm", "curves=r='0/0 1/0.9':g='0/0.05 1/0.95':b='0/0.1 1/0.9'");
+                presets.put("cool", "curves=r='0/0.1 1/0.9':g='0/0.05 1/0.95':b='0/0 1/0.9'");
+                presets.put("cine", "curves=master='0/0.05 0.5/0.4 1/0.95',eq=saturation=0.8:contrast=1.1:gamma=1.1");
+                presets.put("vintage", "curves=r='0/0.16 .5/0.5 1/0.81':g='0/0.12 .5/0.5 1/0.91':b='0/0.2 .5/0.5 1/0.85'," +
+                        "eq=saturation=0.6:contrast=1.1:brightness=0.05,gblur=sigma=0.5:steps=1");
+                presets.put("scifi", "curves=r='0/0 .5/0.4 1/1':g='0/0 .5/0.5 1/1':b='0/0.1 .5/0.6 1/1'," +
+                        "eq=saturation=0.8:contrast=1.2:brightness=0.05,vignette=angle=PI/4:x0=0.5:y0=0.5:mode=forward");
+                presets.put("noir", "lutyuv=y=gammaval(0.7):u=128:v=128");
+
+                filterString = presets.getOrDefault(preset, "");
+                if (filterString.isEmpty()) {
+                    filterString = "null"; // FFmpeg no-op filter
+                }
+                break;
+
+
             case "custom":
                 // For advanced users who know FFmpeg filter syntax
                 filterString = filterParams.getOrDefault("value", "").toString();
@@ -811,106 +1119,4 @@ public class VideoEditingService {
                 .findFirst()
                 .orElse(null);
     }
-
-//    // Enhanced method to process a segment with all operations including filters
-//    private String processSegment(VideoSegment segment, List<EditOperation> allOperations)
-//            throws IOException, InterruptedException {
-//
-//        // Get the input path, ensuring it's properly formatted
-//        String inputPath = segment.getSourceVideoPath();
-//        if (!inputPath.contains("/")) {
-//            inputPath = "videos/" + inputPath;
-//        }
-//
-//        // Find all operations that apply to this segment
-//        List<EditOperation> applicableOperations = allOperations.stream()
-//                .filter(op -> isOperationApplicableToSegment(op, segment.getId()))
-//                .collect(Collectors.toList());
-//
-//        // If no operations and no trimming needed, return the original path
-//        if (applicableOperations.isEmpty() && segment.getStartTime() == 0 && segment.getEndTime() == -1) {
-//            return inputPath;
-//        }
-//
-//        // Create a temporary output path for this processed segment
-//        String outputPath = "edited_videos/segment_" + UUID.randomUUID() + ".mp4";
-//
-//        // Extract filter operations
-//        List<EditOperation> filterOperations = applicableOperations.stream()
-//                .filter(op -> "FILTER".equals(op.getOperationType()))
-//                .collect(Collectors.toList());
-//
-//        // Build the filter complex expression
-//        StringBuilder filterComplex = new StringBuilder();
-//        if (!filterOperations.isEmpty()) {
-//            filterComplex.append("[0:v]");
-//
-//            // Add each filter in sequence
-//            for (int i = 0; i < filterOperations.size(); i++) {
-//                EditOperation op = filterOperations.get(i);
-//                filterComplex.append((String) op.getParameters().get("filter"));
-//
-//                // Add comma if not the last filter
-//                if (i < filterOperations.size() - 1) {
-//                    filterComplex.append(",");
-//                }
-//            }
-//
-//            // Name the output
-//            filterComplex.append("[filtered]");
-//        }
-//
-//        // Build the FFmpeg command
-//        List<String> command = new ArrayList<>();
-//        command.add(ffmpegPath);
-//        command.add("-i");
-//        command.add(inputPath);
-//
-//        // Add segment start time
-//        if (segment.getStartTime() > 0) {
-//            command.add("-ss");
-//            command.add(String.valueOf(segment.getStartTime()));
-//        }
-//
-//        // Add segment duration if an end time is specified
-//        if (segment.getEndTime() > 0) {
-//            command.add("-t");
-//            command.add(String.valueOf(segment.getEndTime() - segment.getStartTime()));
-//        }
-//
-//        // Add filter complex if we have filters
-//        if (filterComplex.length() > 0) {
-//            command.add("-filter_complex");
-//            command.add(filterComplex.toString());
-//            command.add("-map");
-//            command.add("[filtered]");
-//            command.add("-map");
-//            command.add("0:a?"); // Map audio if it exists
-//        }
-//
-//        // Output options
-//        command.add("-c:v");
-//        command.add("libx264");  // Use H.264 video codec
-//        command.add("-c:a");
-//        command.add("aac");
-//        command.add("-y"); // Overwrite if file exists
-//        command.add(outputPath);
-//
-//        // Add quality settings
-//        command.add("-preset");
-//        command.add("medium");   // Balance between encoding speed and quality
-//        command.add("-crf");
-//        command.add("23");       // Constant Rate Factor - lower is better quality
-//
-//        // Log the final command for debugging
-//        System.out.println("FFmpeg command: " + String.join(" ", command));
-//
-//        // Execute the command
-//        executeFFmpegCommand(new ProcessBuilder(command));
-//
-//        return outputPath;
-//    }
-
-
-
 }
