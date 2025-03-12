@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -180,16 +181,37 @@ public class ProjectController {
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
             @RequestParam String sessionId,
-            @RequestBody Map<String, String> request) {
+            @RequestBody Map<String, Object> request) {
         try {
             User user = getUserFromToken(token);
-            videoEditingService.addVideoToTimeline(sessionId, request.get("videoPath"));
+
+            // Extract required parameters from the request
+            String videoPath = (String) request.get("videoPath");
+            Integer layer = (Integer) request.get("layer"); // Layer (optional, default to 0)
+            Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : null;
+            Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
+
+            // Validate required parameters
+            if (videoPath == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: videoPath");
+            }
+
+            // Call the service method to add the video to the timeline
+            videoEditingService.addVideoToTimeline(
+                    sessionId,
+                    videoPath,
+                    layer != null ? layer : 0, // Default to layer 0 if not provided
+                    timelineStartTime,
+                    timelineEndTime
+            );
+
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding video to timeline: " + e.getMessage());
         }
     }
+
 
     @PostMapping("/{projectId}/apply-filter")
     public ResponseEntity<?> applyFilter(
@@ -226,6 +248,119 @@ public class ProjectController {
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error retrieving filter details: " + e.getMessage());
+        }
+    }
+
+
+    @PostMapping("/{projectId}/add-image")
+    public ResponseEntity<?> addImageToTimeline(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            // Retrieve user from token (if needed)
+            User user = getUserFromToken(token);
+
+            // Extract parameters
+            String imagePath = (String) request.get("imagePath");
+            Integer layer = request.get("layer") != null ?
+                    ((Number) request.get("layer")).intValue() : 0;
+            Double timelineStartTime = request.get("timelineStartTime") != null ?
+                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
+            Double timelineEndTime = request.get("timelineEndTime") != null ?
+                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            Integer positionX = request.get("positionX") != null ?
+                    ((Number) request.get("positionX")).intValue() : 0;
+            Integer positionY = request.get("positionY") != null ?
+                    ((Number) request.get("positionY")).intValue() : 0;
+            Double scale = request.get("scale") != null ?
+                    ((Number) request.get("scale")).doubleValue() : 1.0;
+
+            // Validate required parameters
+            if (imagePath == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: imagePath");
+            }
+
+            // Validate parameter ranges
+            if (layer < 0) {
+                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
+            }
+            if (timelineStartTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline start time must be a non-negative value");
+            }
+            if (timelineEndTime != null && timelineEndTime <= timelineStartTime) {
+                return ResponseEntity.badRequest().body("Timeline end time must be greater than start time");
+            }
+            if (scale <= 0) {
+                return ResponseEntity.badRequest().body("Scale must be a positive value");
+            }
+
+            // Call service method
+            videoEditingService.addImageToTimeline(
+                    sessionId,
+                    imagePath,
+                    layer,
+                    timelineStartTime,
+                    timelineEndTime,
+                    positionX,
+                    positionY,
+                    scale
+            );
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+
+            // Return a structured error response
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Error adding image to timeline");
+            errorResponse.put("message", e.getMessage());
+
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(errorResponse);
+        }
+    }
+    @PutMapping("/{projectId}/update-image")
+    public ResponseEntity<?> updateImageSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Extract parameters
+            String segmentId = (String) request.get("segmentId");
+            Integer positionX = request.containsKey("positionX") ?
+                    Integer.valueOf(request.get("positionX").toString()) : null;
+            Integer positionY = request.containsKey("positionY") ?
+                    Integer.valueOf(request.get("positionY").toString()) : null;
+            Double scale = request.containsKey("scale") ?
+                    Double.valueOf(request.get("scale").toString()) : null;
+            Double opacity = request.containsKey("opacity") ?
+                    Double.valueOf(request.get("opacity").toString()) : null;
+            Integer layer = request.containsKey("layer") ?
+                    Integer.valueOf(request.get("layer").toString()) : null;
+
+            // Validate parameters
+            if (segmentId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+
+            // Call service method
+            videoEditingService.updateImageSegment(
+                    sessionId,
+                    segmentId,
+                    positionX,
+                    positionY,
+                    scale,
+                    opacity,
+                    layer
+            );
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating image segment: " + e.getMessage());
         }
     }
 }

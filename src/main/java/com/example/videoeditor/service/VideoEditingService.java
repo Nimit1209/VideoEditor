@@ -14,6 +14,10 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
 
 @Service
 public class VideoEditingService {
@@ -73,6 +77,53 @@ public class VideoEditingService {
             this.lastAccessTime = lastAccessTime;
         }
     }
+
+    /**
+     * Gets the timeline state for a given session ID
+     * @param sessionId The session ID
+     * @return The timeline state
+     */
+    public TimelineState getTimelineState(String sessionId) {
+        EditSession session = activeSessions.get(sessionId);
+        if (session == null) {
+            throw new RuntimeException("Edit session not found: " + sessionId);
+        }
+
+        // Update last access time
+        session.setLastAccessTime(System.currentTimeMillis());
+
+        return session.getTimelineState();
+    }
+
+    /**
+     * Saves the timeline state for a given session ID
+     * @param sessionId The session ID
+     * @param timelineState The timeline state to save
+     */
+    public void saveTimelineState(String sessionId, TimelineState timelineState) {
+        EditSession session = activeSessions.get(sessionId);
+        if (session == null) {
+            throw new RuntimeException("Edit session not found: " + sessionId);
+        }
+
+        // Update the timeline state
+        session.setTimelineState(timelineState);
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+//    public void persistTimelineState(String sessionId) throws JsonProcessingException {
+//        EditSession session = activeSessions.get(sessionId);
+//        if (session == null) {
+//            throw new RuntimeException("Edit session not found: " + sessionId);
+//        }
+//
+//        Project project = projectRepository.findById(session.getProjectId())
+//                .orElseThrow(() -> new RuntimeException("Project not found"));
+//
+//        project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
+//        project.setLastModified(LocalDateTime.now());
+//        projectRepository.save(project);
+//    }
 
     public Project createProject(User user, String name, Integer width, Integer height) throws JsonProcessingException {
         Project project = new Project();
@@ -284,10 +335,15 @@ public class VideoEditingService {
 
 
 
-    public void addVideoToTimeline(String sessionId, String videoPath) throws IOException, InterruptedException {
+    public void addVideoToTimeline(String sessionId, String videoPath, Integer layer, Double timelineStartTime, Double timelineEndTime)
+            throws IOException, InterruptedException {
+
         // Log the incoming request parameters
         System.out.println("addVideoToTimeline called with sessionId: " + sessionId);
         System.out.println("Video path: " + videoPath);
+        System.out.println("Layer: " + layer);
+        System.out.println("Timeline start time: " + timelineStartTime);
+        System.out.println("Timeline end time: " + timelineEndTime);
 
         EditSession session = getSession(sessionId);
 
@@ -303,6 +359,33 @@ public class VideoEditingService {
             double duration = getVideoDuration(videoPath);
             System.out.println("Actual video duration: " + duration);
 
+            // If layer is not provided, default to 0
+            layer = layer != null ? layer : 0;
+
+            // If timelineStartTime is not provided, calculate it based on the last segment in the layer
+            if (timelineStartTime == null) {
+                double lastSegmentEndTime = 0.0;
+
+                // Find the end time of the last segment in the same layer
+                for (VideoSegment segment : session.getTimelineState().getSegments()) {
+                    if (segment.getLayer() == layer && segment.getTimelineEndTime() > lastSegmentEndTime) {
+                        lastSegmentEndTime = segment.getTimelineEndTime();
+                    }
+                }
+
+                timelineStartTime = lastSegmentEndTime;
+            }
+
+            // If timelineEndTime is not provided, calculate it based on the video duration
+            if (timelineEndTime == null) {
+                timelineEndTime = timelineStartTime + duration;
+            }
+
+            // Validate timeline position
+            if (!session.getTimelineState().isTimelinePositionAvailable(timelineStartTime, timelineEndTime, layer)) {
+                throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + layer);
+            }
+
             // Create a video segment for the entire video
             VideoSegment segment = new VideoSegment();
             segment.setSourceVideoPath(videoPath);
@@ -312,6 +395,10 @@ public class VideoEditingService {
             segment.setPositionX(0);
             segment.setPositionY(0);
             segment.setScale(1.0);
+
+            segment.setLayer(layer); // Set layer if provided, else default to 0
+            segment.setTimelineStartTime(timelineStartTime); // Set timeline start time
+            segment.setTimelineEndTime(timelineEndTime);     // Set timeline end time
 
             // Add to timeline
             if (session.getTimelineState() == null) {
@@ -327,7 +414,12 @@ public class VideoEditingService {
             EditOperation addOperation = new EditOperation();
             addOperation.setOperationType("ADD");
             addOperation.setSourceVideoPath(videoPath);
-            addOperation.setParameters(Map.of("time", System.currentTimeMillis()));
+            addOperation.setParameters(Map.of(
+                    "time", System.currentTimeMillis(),
+                    "layer", layer,
+                    "timelineStartTime", timelineStartTime,
+                    "timelineEndTime", timelineEndTime
+            ));
 
             session.getTimelineState().getOperations().add(addOperation);
             session.setLastAccessTime(System.currentTimeMillis());
@@ -463,95 +555,233 @@ public class VideoEditingService {
             tempDir.mkdirs();
         }
 
+        // Find all unique timeline ranges where composition changes
+        Set<Double> timePoints = new TreeSet<>();
+        for (VideoSegment segment : timelineState.getSegments()) {
+            timePoints.add(segment.getTimelineStartTime());
+            timePoints.add(segment.getTimelineEndTime());
+        }
+
+        // Add image segments time points
+        for (ImageSegment imgSegment : timelineState.getImageSegments()) {
+            timePoints.add(imgSegment.getTimelineStartTime());
+            timePoints.add(imgSegment.getTimelineEndTime());
+        }
+
+        // Add text segment time points if you have them
+        for (TextSegment textSegment : timelineState.getTextSegments()) {
+            timePoints.add(textSegment.getTimelineStartTime());
+            timePoints.add(textSegment.getTimelineEndTime());
+        }
+
+        // Sort time points
+        List<Double> sortedTimePoints = new ArrayList<>(timePoints);
+        Collections.sort(sortedTimePoints);
+
         // Create a list to store intermediate files
         List<File> intermediateFiles = new ArrayList<>();
 
-        // Process each segment in the timeline
-        for (VideoSegment segment : timelineState.getSegments()) {
-            String videoPath = "videos/" + segment.getSourceVideoPath();
+        // Process each time segment
+        for (int i = 0; i < sortedTimePoints.size() - 1; i++) {
+            double segmentStart = sortedTimePoints.get(i);
+            double segmentEnd = sortedTimePoints.get(i + 1);
 
-            // Verify source video exists
-            File sourceVideo = new File(videoPath);
-            if (!sourceVideo.exists()) {
-                throw new IOException("Source video not found: " + videoPath);
+            // Skip zero-length segments
+            if (segmentEnd - segmentStart <= 0.001) {
+                continue;
             }
 
-            // Create a temporary file for this segment
+            // Find all video segments visible in this time range
+            List<VideoSegment> visibleSegments = new ArrayList<>();
+            for (VideoSegment segment : timelineState.getSegments()) {
+                if (segment.getTimelineStartTime() <= segmentEnd &&
+                        segment.getTimelineEndTime() >= segmentStart) {
+                    visibleSegments.add(segment);
+                }
+            }
+
+            // Find all image segments visible in this time range
+            List<ImageSegment> visibleImages = new ArrayList<>();
+            for (ImageSegment imgSegment : timelineState.getImageSegments()) {
+                if (imgSegment.getTimelineStartTime() <= segmentEnd &&
+                        imgSegment.getTimelineEndTime() >= segmentStart) {
+                    visibleImages.add(imgSegment);
+                }
+            }
+
+            // Skip if no segments in this time range
+            if (visibleSegments.isEmpty() && visibleImages.isEmpty()) {
+                continue;
+            }
+
+            // Sort by layer (lower layers first)
+            Collections.sort(visibleSegments, Comparator.comparingInt(VideoSegment::getLayer));
+            Collections.sort(visibleImages, Comparator.comparingInt(ImageSegment::getLayer));
+
+            // Create a temporary file for this time segment
             String tempFilename = "temp_" + UUID.randomUUID().toString() + ".mp4";
             File tempFile = new File(tempDir, tempFilename);
             intermediateFiles.add(tempFile);
 
-            // Get segment details
-            int positionX = segment.getPositionX();
-            int positionY = segment.getPositionY();
-            double scale = segment.getScale(); // Scale factor (e.g., 1.0 = original, 0.6 = 60%)
-
-            // Get all filters that apply to this segment
-            List<String> segmentFilters = getFiltersForSegment(timelineState, segment.getId());
-            System.out.println("Found " + segmentFilters.size() + " filters for segment " + segment.getId());
-
-            // Start building the filter_complex string
-            StringBuilder filterComplex = new StringBuilder();
-
-            // Add scaling filter
-            filterComplex.append("[0:v]");
-
-
-
-            // Apply all segment-specific filters first
-            if (!segmentFilters.isEmpty()) {
-                for (String filter : segmentFilters) {
-                    filterComplex.append(filter).append(",");
-                }
-            }
-
-            // Add scaling after filters
-            filterComplex.append("scale=iw*").append(scale).append(":ih*").append(scale).append("[scaled];");
-
-            // Create background and overlay
-            filterComplex.append("color=black:size=").append(canvasWidth).append("x").append(canvasHeight).append("[bg];");
-
-
-            // Calculate scaled dimensions
-            String scaleFilter = "scale=iw*" + scale + ":ih*" + scale + "[scaled]";
-
-            // Compute centered position with offset
-            String overlayX = "(W-w)/2+" + positionX;
-            String overlayY = "(H-h)/2+" + positionY;
-
-            filterComplex.append("[bg][scaled]overlay=x=").append(overlayX).append(":y=").append(overlayY);
-
-            // Build FFmpeg command for trimming, scaling, and positioning
+            // Build FFmpeg command
             List<String> command = new ArrayList<>();
             command.add(ffmpegPath);
-            command.add("-i");
-            command.add(videoPath);
 
-            // Trim the segment
-            command.add("-ss");
-            command.add(String.valueOf(segment.getStartTime()));
-            if (segment.getEndTime() != -1) {
-                command.add("-to");
-                command.add(String.valueOf(segment.getEndTime()));
+            // Add each video source as input
+            for (VideoSegment segment : visibleSegments) {
+                command.add("-i");
+                command.add("videos/" + segment.getSourceVideoPath());
             }
 
-            // Add the complex filter chain
+            // Add each image as an input
+            for (ImageSegment imgSegment : visibleImages) {
+                command.add("-i");
+                command.add("images/" + imgSegment.getImagePath());
+            }
+
+            // Create complex filter for compositing
+            StringBuilder filterComplex = new StringBuilder();
+
+            // Create background
+            filterComplex.append("color=black:size=").append(canvasWidth).append("x").append(canvasHeight)
+                    .append(":duration=").append(segmentEnd - segmentStart).append("[bg];");
+
+            // Process each visible segment
+            String lastOutput = "bg";
+            for (int j = 0; j < visibleSegments.size(); j++) {
+                VideoSegment segment = visibleSegments.get(j);
+
+                // Calculate offset for trimming
+                double relativeStartTime = segment.getStartTime() + (segmentStart - segment.getTimelineStartTime());
+                double trimDuration = segmentEnd - segmentStart;
+
+                // Get all filters for this segment
+                List<String> segmentFilters = getFiltersForSegment(timelineState, segment.getId());
+
+                // Create scale and trim filters
+                filterComplex.append("[").append(j).append(":v]");
+                filterComplex.append("trim=").append(relativeStartTime).append(":")
+                        .append(relativeStartTime + trimDuration).append(",");
+                filterComplex.append("setpts=PTS-STARTPTS,");
+
+                // Apply segment-specific filters
+                if (!segmentFilters.isEmpty()) {
+                    for (String filter : segmentFilters) {
+                        filterComplex.append(filter).append(",");
+                    }
+                }
+
+                // Add scaling
+                filterComplex.append("scale=iw*").append(segment.getScale()).append(":ih*").append(segment.getScale());
+                filterComplex.append("[v").append(j).append("];");
+
+                // Overlay this layer on top of previous layers
+                String nextOutput = (j == visibleSegments.size() - 1 && visibleImages.isEmpty()) ? "vout" : "v" + (j + 10);
+
+                String overlayX = "(W-w)/2+" + segment.getPositionX();
+                String overlayY = "(H-h)/2+" + segment.getPositionY();
+
+                filterComplex.append("[").append(lastOutput).append("][v").append(j).append("]");
+                filterComplex.append("overlay=").append(overlayX).append(":").append(overlayY);
+
+                if (j < visibleSegments.size() - 1 || !visibleImages.isEmpty()) {
+                    filterComplex.append("[").append(nextOutput).append("];");
+                } else {
+                    filterComplex.append("[").append(nextOutput).append("];");
+                }
+
+                lastOutput = nextOutput;
+            }
+
+            // Process each visible image
+            int imgInputIndex = visibleSegments.size(); // Start after video inputs
+            for (int j = 0; j < visibleImages.size(); j++) {
+                ImageSegment imgSegment = visibleImages.get(j);
+
+                // Create an input for the image that lasts for the required duration
+                filterComplex.append("[").append(imgInputIndex + j).append(":v]");
+                filterComplex.append("scale=").append(imgSegment.getWidth()).append("*")
+                        .append(imgSegment.getScale()).append(":")
+                        .append(imgSegment.getHeight()).append("*")
+                        .append(imgSegment.getScale());
+
+                // Add transparency if needed
+                if (imgSegment.getOpacity() < 1.0) {
+                    filterComplex.append(",format=rgba,colorchannelmixer=aa=")
+                            .append(imgSegment.getOpacity());
+                }
+                filterComplex.append("[img").append(j).append("];");
+
+                // Overlay this image on top of previous layers
+                String nextOutput = (j == visibleImages.size() - 1) ? "vout" : "v" + (j + 20);
+
+                String overlayX = "(W-w)/2+" + imgSegment.getPositionX();
+                String overlayY = "(H-h)/2+" + imgSegment.getPositionY();
+
+                filterComplex.append("[").append(lastOutput).append("][img").append(j).append("]");
+                filterComplex.append("overlay=").append(overlayX).append(":")
+                        .append(overlayY);
+
+                // Remove the enable='between...' condition since we've already filtered
+                // for visible images in this time segment
+                filterComplex.append("[").append(nextOutput).append("];");
+
+                lastOutput = nextOutput;
+            }
+
+            // Ensure the final output is mapped to "vout"
+            if (!lastOutput.equals("vout")) {
+                filterComplex.append("[").append(lastOutput).append("]setpts=PTS-STARTPTS[vout];");
+            }
+
+            // Process each visible segment - AUDIO
+            for (int j = 0; j < visibleSegments.size(); j++) {
+                VideoSegment segment = visibleSegments.get(j);
+
+                // Calculate offset for trimming
+                double relativeStartTime = segment.getStartTime() + (segmentStart - segment.getTimelineStartTime());
+                double trimDuration = segmentEnd - segmentStart;
+
+                // Create trim filters for audio
+                filterComplex.append("[").append(j).append(":a]");
+                filterComplex.append("atrim=").append(relativeStartTime).append(":")
+                        .append(relativeStartTime + trimDuration).append(",");
+                filterComplex.append("asetpts=PTS-STARTPTS");
+                filterComplex.append("[a").append(j).append("];");
+            }
+
+            // Mix all audio streams together
+            if (visibleSegments.size() > 0) {
+                // First check if all inputs have audio
+                for (int j = 0; j < visibleSegments.size(); j++) {
+                    filterComplex.append("[a").append(j).append("]");
+                }
+
+                // Add the amix filter with normalize=0 to preserve volume
+                filterComplex.append("amix=inputs=").append(visibleSegments.size()).append(":duration=longest:dropout_transition=0:normalize=0[aout]");
+            }
+
+            // Add filter_complex to command
             command.add("-filter_complex");
             command.add(filterComplex.toString());
 
+            // Map the video and audio outputs
+            command.add("-map");
+            command.add("[vout]");
 
-            // Position the segment with scaling
-            command.add("-filter_complex");
-            command.add("[0:v]" + scaleFilter + ";" +
-                    "color=black:size=" + canvasWidth + "x" + canvasHeight + "[bg];" +
-                    "[bg][scaled]overlay=x=" + overlayX + ":y=" + overlayY);
+            // Only map audio if there are audio streams
+            if (visibleSegments.size() > 0) {
+                command.add("-map");
+                command.add("[aout]");
+            }
 
-            // Output the processed segment
+            // Output settings
             command.add("-c:v");
             command.add("libx264");
             command.add("-c:a");
             command.add("aac");
-            command.add("-y"); // Overwrite if exists
+            command.add("-shortest");
+            command.add("-y");
             command.add(tempFile.getAbsolutePath());
 
             // Execute the command
@@ -636,7 +866,6 @@ public class VideoEditingService {
 
         return outputPath;
     }
-
     // Helper method to get all filters for a specific segment
     private List<String> getFiltersForSegment(TimelineState timelineState, String segmentId) {
         return timelineState.getOperations().stream()
@@ -842,41 +1071,6 @@ public class VideoEditingService {
                         ":chroma_msize_y=" + radius + ":chroma_amount=" + (amount * 0.5) +
                         ":alpha_msize_x=" + radius + ":alpha_msize_y=" + radius +
                         ":alpha_amount=" + (amount * 0.5) + ":luma_threshold=" + threshold;
-                break;
-
-            // NEW FILTERS - TIME AND MOTION EFFECTS
-            case "slowmotion":
-                // Create smooth slow motion effect
-                double factor = Double.parseDouble(filterParams.getOrDefault("factor", "2.0").toString());
-                filterString = "setpts=" + factor + "*PTS";
-                break;
-
-            case "timelapse":
-                // Create timelapse/fast motion effect
-                double speed = Double.parseDouble(filterParams.getOrDefault("speed", "8.0").toString());
-                filterString = "setpts=PTS/" + speed;
-                break;
-
-            case "motionblur":
-                // Add motion blur effect
-                int frames = Integer.parseInt(filterParams.getOrDefault("frames", "5").toString());
-                double opacity = Double.parseDouble(filterParams.getOrDefault("opacity", "0.2").toString());
-                filterString = "tmix=frames=" + frames + ":weights='";
-                for (int i = 0; i < frames; i++) {
-                    filterString += opacity;
-                    if (i < frames - 1) filterString += " ";
-                }
-                filterString += "'";
-                break;
-
-            case "freeze":
-                // Freeze frame effect
-                String timeStr = filterParams.getOrDefault("time", "0").toString();
-                filterString = "freeze=first";
-                if (!timeStr.equals("0")) {
-                    double time = Double.parseDouble(timeStr);
-                    filterString = "select='eq(n," + Math.round(time * 25) + ")',freeze";
-                }
                 break;
 
             // NEW FILTERS - ADVANCED COLOR EFFECTS
@@ -1091,6 +1285,16 @@ public class VideoEditingService {
             return false;
         }
 
+        // For ADD_IMAGE operations, check if the image is associated with the segment
+        if ("ADD_IMAGE".equals(operationType)) {
+            return segmentId.equals(operation.getParameters().get("segmentId"));
+        }
+
+        // For UPDATE_IMAGE operations, check if the image is associated with the segment
+        if ("UPDATE_IMAGE".equals(operationType)) {
+            return segmentId.equals(operation.getParameters().get("segmentId"));
+        }
+
         // For future operation types, add handling here
         // Return false by default for unknown operations
         return false;
@@ -1118,5 +1322,120 @@ public class VideoEditingService {
                 .filter(segment -> segment.getId().equals(segmentId))
                 .findFirst()
                 .orElse(null);
+    }
+
+
+//    IMAGE ADDING ...................................................................................................
+
+    public void addImageToTimeline(
+            String sessionId,
+            String imagePath,
+            int layer,
+            double timelineStartTime,
+            Double timelineEndTime,
+            int positionX,
+            int positionY,
+            double scale
+    ) {
+        TimelineState timelineState = getTimelineState(sessionId);
+
+        // Create a new image segment
+        ImageSegment imageSegment = new ImageSegment();
+        imageSegment.setId(UUID.randomUUID().toString()); // Generate unique ID for the image segment
+        imageSegment.setImagePath(imagePath);
+        imageSegment.setLayer(layer);
+        imageSegment.setPositionX(positionX);
+        imageSegment.setPositionY(positionY);
+        imageSegment.setScale(scale);
+
+        // Set timeline timing
+        imageSegment.setTimelineStartTime(timelineStartTime);
+        // If no end time provided, default to 5 seconds duration
+        if (timelineEndTime == null) {
+            imageSegment.setTimelineEndTime(timelineStartTime + 5.0);
+        } else {
+            imageSegment.setTimelineEndTime(timelineEndTime);
+        }
+
+        // Get image dimensions using ImageIO
+        try {
+            File imageFile = new File("images/" + imagePath);
+            System.out.println("Attempting to read image file: " + imageFile.getAbsolutePath());
+            if (!imageFile.exists()) {
+                throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
+            }
+            BufferedImage img = ImageIO.read(imageFile);
+            imageSegment.setWidth(img.getWidth());
+            imageSegment.setHeight(img.getHeight());
+        } catch (IOException e) {
+            throw new RuntimeException("Error reading image file: " + e.getMessage());
+        }
+
+        // Add the image segment to the timeline
+        timelineState.getImageSegments().add(imageSegment);
+
+        // Create an ADD operation for tracking
+        EditOperation addOperation = new EditOperation();
+        addOperation.setOperationType("ADD_IMAGE");
+        addOperation.setSourceVideoPath(imagePath);
+        addOperation.setParameters(Map.of(
+                "imageSegmentId", imageSegment.getId(),
+                "time", System.currentTimeMillis(),
+                "layer", layer,
+                "timelineStartTime", timelineStartTime,
+                "timelineEndTime", imageSegment.getTimelineEndTime(),
+                "positionX", positionX,
+                "positionY", positionY,
+                "scale", scale
+        ));
+
+        timelineState.getOperations().add(addOperation);
+
+        // Save the updated timeline state
+        saveTimelineState(sessionId, timelineState);
+    }
+    public void updateImageSegment(String sessionId, String imageSegmentId,
+                                   Integer positionX, Integer positionY, Double scale,
+                                   Double opacity, Integer layer) {
+        TimelineState timelineState = getTimelineState(sessionId);
+
+        // Find the image segment by ID
+        ImageSegment targetSegment = null;
+        for (ImageSegment segment : timelineState.getImageSegments()) {
+            if (segment.getId().equals(imageSegmentId)) {
+                targetSegment = segment;
+                break;
+            }
+        }
+
+        if (targetSegment == null) {
+            throw new RuntimeException("Image segment not found: " + imageSegmentId);
+        }
+
+        // Update the segment properties if provided
+        if (positionX != null) targetSegment.setPositionX(positionX);
+        if (positionY != null) targetSegment.setPositionY(positionY);
+        if (scale != null) targetSegment.setScale(scale);
+        if (opacity != null) targetSegment.setOpacity(opacity);
+        if (layer != null) targetSegment.setLayer(layer);
+
+        // Create an UPDATE operation for tracking
+        EditOperation updateOperation = new EditOperation();
+        updateOperation.setOperationType("UPDATE_IMAGE");
+        updateOperation.setSourceVideoPath(targetSegment.getImagePath());
+        updateOperation.setParameters(Map.of(
+                "imageSegmentId", imageSegmentId,
+                "time", System.currentTimeMillis(),
+                "positionX", positionX,
+                "positionY", positionY,
+                "scale", scale,
+                "opacity", opacity,
+                "layer", layer
+        ));
+
+        timelineState.getOperations().add(updateOperation);
+
+        // Save the updated timeline state
+        saveTimelineState(sessionId, timelineState);
     }
 }

@@ -15,6 +15,34 @@ public class VideoSegment {
     private Integer positionY = 0;
     private Double scale = 1.0;
 
+    private Integer layer = 0;     // Layer of the segment (for multi-level timelines)
+    private double timelineStartTime; // Start time of the segment in the timeline (in seconds)
+    private double timelineEndTime;   // End time of the segment in the timeline (in seconds)
+
+    public Integer getLayer() {
+        return layer;
+    }
+
+    public void setLayer(Integer layer) {
+        this.layer = layer;
+    }
+
+    public double getTimelineStartTime() {
+        return timelineStartTime;
+    }
+
+    public void setTimelineStartTime(double timelineStartTime) {
+        this.timelineStartTime = timelineStartTime;
+    }
+
+    public double getTimelineEndTime() {
+        return timelineEndTime;
+    }
+
+    public void setTimelineEndTime(double timelineEndTime) {
+        this.timelineEndTime = timelineEndTime;
+    }
+
     public Integer getPositionX() {
         return positionX;
     }
