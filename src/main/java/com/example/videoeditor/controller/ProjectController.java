@@ -1,7 +1,6 @@
 package com.example.videoeditor.controller;
 
-import com.example.videoeditor.dto.FilterRequest;
-import com.example.videoeditor.dto.VideoSegment;
+import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.ProjectRepository;
@@ -277,6 +276,18 @@ public class ProjectController {
             Double scale = request.get("scale") != null ?
                     ((Number) request.get("scale")).doubleValue() : 1.0;
 
+            // New parameters for filters and custom dimensions
+            Integer customWidth = request.get("customWidth") != null ?
+                    ((Number) request.get("customWidth")).intValue() : null;
+            Integer customHeight = request.get("customHeight") != null ?
+                    ((Number) request.get("customHeight")).intValue() : null;
+            Boolean maintainAspectRatio = request.get("maintainAspectRatio") != null ?
+                    (Boolean) request.get("maintainAspectRatio") : null;
+
+            @SuppressWarnings("unchecked")
+            Map<String, String> filters = request.get("filters") != null ?
+                    (Map<String, String>) request.get("filters") : null;
+
             // Validate required parameters
             if (imagePath == null) {
                 return ResponseEntity.badRequest().body("Missing required parameter: imagePath");
@@ -296,6 +307,14 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Scale must be a positive value");
             }
 
+            // Validate custom dimensions
+            if (customWidth != null && customWidth <= 0) {
+                return ResponseEntity.badRequest().body("Custom width must be a positive value");
+            }
+            if (customHeight != null && customHeight <= 0) {
+                return ResponseEntity.badRequest().body("Custom height must be a positive value");
+            }
+
             // Call service method
             videoEditingService.addImageToTimeline(
                     sessionId,
@@ -305,12 +324,15 @@ public class ProjectController {
                     timelineEndTime,
                     positionX,
                     positionY,
-                    scale
+                    scale,
+                    customWidth,
+                    customHeight,
+                    maintainAspectRatio,
+                    filters
             );
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
-
             // Return a structured error response
             Map<String, String> errorResponse = new HashMap<>();
             errorResponse.put("error", "Error adding image to timeline");
@@ -320,6 +342,7 @@ public class ProjectController {
                     .body(errorResponse);
         }
     }
+
     @PutMapping("/{projectId}/update-image")
     public ResponseEntity<?> updateImageSegment(
             @RequestHeader("Authorization") String token,
@@ -342,9 +365,39 @@ public class ProjectController {
             Integer layer = request.containsKey("layer") ?
                     Integer.valueOf(request.get("layer").toString()) : null;
 
+            // New parameters for image customization
+            Integer customWidth = request.containsKey("customWidth") ?
+                    Integer.valueOf(request.get("customWidth").toString()) : null;
+            Integer customHeight = request.containsKey("customHeight") ?
+                    Integer.valueOf(request.get("customHeight").toString()) : null;
+            Boolean maintainAspectRatio = request.containsKey("maintainAspectRatio") ?
+                    Boolean.valueOf(request.get("maintainAspectRatio").toString()) : null;
+
+            // Filter management
+            @SuppressWarnings("unchecked")
+            Map<String, String> filters = request.containsKey("filters") ?
+                    (Map<String, String>) request.get("filters") : null;
+
+            @SuppressWarnings("unchecked")
+            List<String> filtersToRemove = request.containsKey("filtersToRemove") ?
+                    (List<String>) request.get("filtersToRemove") : null;
+
             // Validate parameters
             if (segmentId == null) {
                 return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+
+            // Validate custom dimensions if provided
+            if (customWidth != null && customWidth <= 0) {
+                return ResponseEntity.badRequest().body("Custom width must be a positive value");
+            }
+            if (customHeight != null && customHeight <= 0) {
+                return ResponseEntity.badRequest().body("Custom height must be a positive value");
+            }
+
+            // Validate opacity
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
 
             // Call service method
@@ -355,12 +408,88 @@ public class ProjectController {
                     positionY,
                     scale,
                     opacity,
-                    layer
+                    layer,
+                    customWidth,
+                    customHeight,
+                    maintainAspectRatio,
+                    filters,
+                    filtersToRemove
             );
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error updating image segment: " + e.getMessage());
+        }
+    }
+
+    // Add a new endpoint specifically for applying filters
+    @PutMapping("/{projectId}/apply-image-filter")
+    public ResponseEntity<?> applyImageFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Extract parameters
+            String segmentId = (String) request.get("segmentId");
+            String filterType = (String) request.get("filterType");
+            String filterValue = request.get("filterValue") != null ?
+                    request.get("filterValue").toString() : null;
+
+            // Validate parameters
+            if (segmentId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+            if (filterType == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: filterType");
+            }
+
+            // Get the timeline state
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+
+            // Find the image segment
+            ImageSegment targetSegment = null;
+            for (ImageSegment segment : timelineState.getImageSegments()) {
+                if (segment.getId().equals(segmentId)) {
+                    targetSegment = segment;
+                    break;
+                }
+            }
+
+            if (targetSegment == null) {
+                return ResponseEntity.badRequest().body("Image segment not found: " + segmentId);
+            }
+
+            // Apply or remove filter
+            if (filterValue == null) {
+                targetSegment.removeFilter(filterType);
+            } else {
+                targetSegment.addFilter(filterType, filterValue);
+            }
+
+            // Create an operation for tracking
+            EditOperation filterOperation = new EditOperation();
+            filterOperation.setOperationType("APPLY_IMAGE_FILTER");
+            filterOperation.setSourceVideoPath(targetSegment.getImagePath());
+
+            Map<String, Object> params = new HashMap<>();
+            params.put("imageSegmentId", segmentId);
+            params.put("time", System.currentTimeMillis());
+            params.put("filterType", filterType);
+            params.put("filterValue", filterValue);
+            filterOperation.setParameters(params);
+
+            timelineState.getOperations().add(filterOperation);
+
+            // Save the updated timeline state
+            videoEditingService.saveTimelineState(sessionId, timelineState);
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error applying image filter: " + e.getMessage());
         }
     }
 }

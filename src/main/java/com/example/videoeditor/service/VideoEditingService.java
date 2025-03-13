@@ -700,16 +700,11 @@ public class VideoEditingService {
 
                 // Create an input for the image that lasts for the required duration
                 filterComplex.append("[").append(imgInputIndex + j).append(":v]");
-                filterComplex.append("scale=").append(imgSegment.getWidth()).append("*")
-                        .append(imgSegment.getScale()).append(":")
-                        .append(imgSegment.getHeight()).append("*")
-                        .append(imgSegment.getScale());
 
-                // Add transparency if needed
-                if (imgSegment.getOpacity() < 1.0) {
-                    filterComplex.append(",format=rgba,colorchannelmixer=aa=")
-                            .append(imgSegment.getOpacity());
-                }
+                // Generate and apply all filters for this image
+                String imageFilters = generateImageFilters(imgSegment);
+                filterComplex.append(imageFilters);
+
                 filterComplex.append("[img").append(j).append("];");
 
                 // Overlay this image on top of previous layers
@@ -718,16 +713,19 @@ public class VideoEditingService {
                 String overlayX = "(W-w)/2+" + imgSegment.getPositionX();
                 String overlayY = "(H-h)/2+" + imgSegment.getPositionY();
 
+            // Calculate the relative start and end times within this segment
+                double relativeStart = Math.max(0, imgSegment.getTimelineStartTime() - segmentStart);
+                double relativeEnd = Math.min(segmentEnd - segmentStart, imgSegment.getTimelineEndTime() - segmentStart);
+
                 filterComplex.append("[").append(lastOutput).append("][img").append(j).append("]");
                 filterComplex.append("overlay=").append(overlayX).append(":")
-                        .append(overlayY);
+                        .append(overlayY)
+                        .append(":enable='between(t,").append(relativeStart).append(",").append(relativeEnd).append(")'");
 
-                // Remove the enable='between...' condition since we've already filtered
-                // for visible images in this time segment
                 filterComplex.append("[").append(nextOutput).append("];");
-
                 lastOutput = nextOutput;
             }
+
 
             // Ensure the final output is mapped to "vout"
             if (!lastOutput.equals("vout")) {
@@ -1327,6 +1325,88 @@ public class VideoEditingService {
 
 //    IMAGE ADDING ...................................................................................................
 
+    // Helper method to generate FFmpeg filter string for an image segment
+    private String generateImageFilters(ImageSegment imgSegment) {
+        StringBuilder filterStr = new StringBuilder();
+
+        // First handle scaling - either using custom dimensions or scale factor
+        if (imgSegment.getCustomWidth() > 0 || imgSegment.getCustomHeight() > 0) {
+            if (imgSegment.isMaintainAspectRatio()) {
+                // If maintaining aspect ratio, use force_original_aspect_ratio
+                if (imgSegment.getCustomWidth() > 0 && imgSegment.getCustomHeight() > 0) {
+                    filterStr.append("scale=").append(imgSegment.getCustomWidth()).append(":")
+                            .append(imgSegment.getCustomHeight()).append(":force_original_aspect_ratio=decrease");
+                } else if (imgSegment.getCustomWidth() > 0) {
+                    filterStr.append("scale=").append(imgSegment.getCustomWidth()).append(":-1");
+                } else {
+                    filterStr.append("scale=-1:").append(imgSegment.getCustomHeight());
+                }
+            } else {
+                // Not maintaining aspect ratio, use exact dimensions
+                int width = imgSegment.getCustomWidth() > 0 ? imgSegment.getCustomWidth() : imgSegment.getWidth();
+                int height = imgSegment.getCustomHeight() > 0 ? imgSegment.getCustomHeight() : imgSegment.getHeight();
+                filterStr.append("scale=").append(width).append(":").append(height);
+            }
+        } else {
+            // Use scale factor
+            filterStr.append("scale=").append(imgSegment.getWidth()).append("*")
+                    .append(imgSegment.getScale()).append(":")
+                    .append(imgSegment.getHeight()).append("*")
+                    .append(imgSegment.getScale());
+        }
+
+        // Apply image filters
+        Map<String, String> filters = imgSegment.getFilters();
+        if (filters != null && !filters.isEmpty()) {
+            for (Map.Entry<String, String> filter : filters.entrySet()) {
+                switch (filter.getKey()) {
+                    case "brightness":
+                        // Value between -1.0 (black) and 1.0 (white)
+                        filterStr.append(",eq=brightness=").append(filter.getValue());
+                        break;
+                    case "contrast":
+                        // Value usually between 0.0 and 2.0
+                        filterStr.append(",eq=contrast=").append(filter.getValue());
+                        break;
+                    case "saturation":
+                        // Value usually between 0.0 (grayscale) and 3.0 (hyper-saturated)
+                        filterStr.append(",eq=saturation=").append(filter.getValue());
+                        break;
+                    case "blur":
+                        // Gaussian blur with sigma value (1-5 is normal range)
+                        filterStr.append(",gblur=sigma=").append(filter.getValue());
+                        break;
+                    case "sharpen":
+                        // Custom convolution kernel for sharpening
+                        filterStr.append(",convolution='0 -1 0 -1 5 -1 0 -1 0:0 -1 0 -1 5 -1 0 -1 0:0 -1 0 -1 5 -1 0 -1 0:0 -1 0 -1 5 -1 0 -1 0'");
+                        break;
+                    case "sepia":
+                        filterStr.append(",colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0");
+                        break;
+                    case "grayscale":
+                        filterStr.append(",hue=s=0");
+                        break;
+                    case "vignette":
+                        // Add a vignette effect (darkness around the edges)
+                        filterStr.append(",vignette=PI/4");
+                        break;
+                    case "noise":
+                        // Add some noise to the image
+                        filterStr.append(",noise=alls=").append(filter.getValue()).append(":allf=t");
+                        break;
+                }
+            }
+        }
+
+        // Add transparency if needed
+        if (imgSegment.getOpacity() < 1.0) {
+            filterStr.append(",format=rgba,colorchannelmixer=aa=")
+                    .append(imgSegment.getOpacity());
+        }
+
+        return filterStr.toString();
+    }
+
     public void addImageToTimeline(
             String sessionId,
             String imagePath,
@@ -1335,7 +1415,11 @@ public class VideoEditingService {
             Double timelineEndTime,
             int positionX,
             int positionY,
-            double scale
+            double scale,
+            Integer customWidth,
+            Integer customHeight,
+            Boolean maintainAspectRatio,
+            Map<String, String> filters
     ) {
         TimelineState timelineState = getTimelineState(sessionId);
 
@@ -1371,6 +1455,24 @@ public class VideoEditingService {
             throw new RuntimeException("Error reading image file: " + e.getMessage());
         }
 
+        // Set optional custom dimensions
+        if (customWidth != null) {
+            imageSegment.setCustomWidth(customWidth);
+        }
+
+        if (customHeight != null) {
+            imageSegment.setCustomHeight(customHeight);
+        }
+
+        if (maintainAspectRatio != null) {
+            imageSegment.setMaintainAspectRatio(maintainAspectRatio);
+        }
+
+        // Set filters if provided
+        if (filters != null && !filters.isEmpty()) {
+            imageSegment.setFilters(new HashMap<>(filters));
+        }
+
         // Add the image segment to the timeline
         timelineState.getImageSegments().add(imageSegment);
 
@@ -1378,25 +1480,44 @@ public class VideoEditingService {
         EditOperation addOperation = new EditOperation();
         addOperation.setOperationType("ADD_IMAGE");
         addOperation.setSourceVideoPath(imagePath);
-        addOperation.setParameters(Map.of(
-                "imageSegmentId", imageSegment.getId(),
-                "time", System.currentTimeMillis(),
-                "layer", layer,
-                "timelineStartTime", timelineStartTime,
-                "timelineEndTime", imageSegment.getTimelineEndTime(),
-                "positionX", positionX,
-                "positionY", positionY,
-                "scale", scale
-        ));
+
+        // Create a parameters map with all properties
+        Map<String, Object> params = new HashMap<>();
+        params.put("imageSegmentId", imageSegment.getId());
+        params.put("time", System.currentTimeMillis());
+        params.put("layer", layer);
+        params.put("timelineStartTime", timelineStartTime);
+        params.put("timelineEndTime", imageSegment.getTimelineEndTime());
+        params.put("positionX", positionX);
+        params.put("positionY", positionY);
+        params.put("scale", scale);
+
+        if (customWidth != null) params.put("customWidth", customWidth);
+        if (customHeight != null) params.put("customHeight", customHeight);
+        if (maintainAspectRatio != null) params.put("maintainAspectRatio", maintainAspectRatio);
+        if (filters != null && !filters.isEmpty()) params.put("filters", filters);
+
+        addOperation.setParameters(params);
 
         timelineState.getOperations().add(addOperation);
 
         // Save the updated timeline state
         saveTimelineState(sessionId, timelineState);
     }
-    public void updateImageSegment(String sessionId, String imageSegmentId,
-                                   Integer positionX, Integer positionY, Double scale,
-                                   Double opacity, Integer layer) {
+    public void updateImageSegment(
+            String sessionId,
+            String imageSegmentId,
+            Integer positionX,
+            Integer positionY,
+            Double scale,
+            Double opacity,
+            Integer layer,
+            Integer customWidth,
+            Integer customHeight,
+            Boolean maintainAspectRatio,
+            Map<String, String> filters,
+            List<String> filtersToRemove
+    ) {
         TimelineState timelineState = getTimelineState(sessionId);
 
         // Find the image segment by ID
@@ -1419,20 +1540,47 @@ public class VideoEditingService {
         if (opacity != null) targetSegment.setOpacity(opacity);
         if (layer != null) targetSegment.setLayer(layer);
 
+        // Update custom size properties
+        if (customWidth != null) targetSegment.setCustomWidth(customWidth);
+        if (customHeight != null) targetSegment.setCustomHeight(customHeight);
+        if (maintainAspectRatio != null) targetSegment.setMaintainAspectRatio(maintainAspectRatio);
+
+        // Update filters
+        if (filters != null && !filters.isEmpty()) {
+            for (Map.Entry<String, String> filter : filters.entrySet()) {
+                targetSegment.addFilter(filter.getKey(), filter.getValue());
+            }
+        }
+
+        // Remove specified filters
+        if (filtersToRemove != null && !filtersToRemove.isEmpty()) {
+            for (String filterToRemove : filtersToRemove) {
+                targetSegment.removeFilter(filterToRemove);
+            }
+        }
+
         // Create an UPDATE operation for tracking
         EditOperation updateOperation = new EditOperation();
         updateOperation.setOperationType("UPDATE_IMAGE");
         updateOperation.setSourceVideoPath(targetSegment.getImagePath());
-        updateOperation.setParameters(Map.of(
-                "imageSegmentId", imageSegmentId,
-                "time", System.currentTimeMillis(),
-                "positionX", positionX,
-                "positionY", positionY,
-                "scale", scale,
-                "opacity", opacity,
-                "layer", layer
-        ));
 
+        // Build parameters map
+        Map<String, Object> params = new HashMap<>();
+        params.put("imageSegmentId", imageSegmentId);
+        params.put("time", System.currentTimeMillis());
+
+        if (positionX != null) params.put("positionX", positionX);
+        if (positionY != null) params.put("positionY", positionY);
+        if (scale != null) params.put("scale", scale);
+        if (opacity != null) params.put("opacity", opacity);
+        if (layer != null) params.put("layer", layer);
+        if (customWidth != null) params.put("customWidth", customWidth);
+        if (customHeight != null) params.put("customHeight", customHeight);
+        if (maintainAspectRatio != null) params.put("maintainAspectRatio", maintainAspectRatio);
+        if (filters != null) params.put("filtersAdded", filters);
+        if (filtersToRemove != null) params.put("filtersRemoved", filtersToRemove);
+
+        updateOperation.setParameters(params);
         timelineState.getOperations().add(updateOperation);
 
         // Save the updated timeline state
