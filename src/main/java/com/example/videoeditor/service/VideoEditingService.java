@@ -8,11 +8,18 @@ import com.example.videoeditor.repository.ProjectRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+
+import java.awt.*;
 import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -111,19 +118,7 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
-//    public void persistTimelineState(String sessionId) throws JsonProcessingException {
-//        EditSession session = activeSessions.get(sessionId);
-//        if (session == null) {
-//            throw new RuntimeException("Edit session not found: " + sessionId);
-//        }
-//
-//        Project project = projectRepository.findById(session.getProjectId())
-//                .orElseThrow(() -> new RuntimeException("Project not found"));
-//
-//        project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
-//        project.setLastModified(LocalDateTime.now());
-//        projectRepository.save(project);
-//    }
+
 
     public Project createProject(User user, String name, Integer width, Integer height) throws JsonProcessingException {
         Project project = new Project();
@@ -150,8 +145,19 @@ public class VideoEditingService {
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found"));
             timelineState = objectMapper.readValue(project.getTimelineState(), TimelineState.class);
+
+            // Set canvas dimensions from project if not already set in TimelineState
+            if (timelineState.getCanvasWidth() == null) {
+                timelineState.setCanvasWidth(project.getWidth());
+            }
+            if (timelineState.getCanvasHeight() == null) {
+                timelineState.setCanvasHeight(project.getHeight());
+            }
+
         } else {
             timelineState = new TimelineState();
+            timelineState.setCanvasWidth(1920);
+            timelineState.setCanvasHeight(1080);
         }
 
         // Ensure 'operations' is initialized
@@ -164,6 +170,48 @@ public class VideoEditingService {
 
         return sessionId;
     }
+    public Project updateProject(Long projectId, User user, String name, Integer width, Integer height) throws JsonProcessingException {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found"));
+
+        // Check if user is authorized to modify this project
+        if (!project.getUser().getId().equals(user.getId())) {
+            throw new RuntimeException("Unauthorized to modify this project");
+        }
+
+        // Update fields if provided
+        if (name != null) {
+            project.setName(name);
+        }
+        if (width != null) {
+            project.setWidth(width);
+        }
+        if (height != null) {
+            project.setHeight(height);
+        }
+
+        project.setLastModified(LocalDateTime.now());
+        return projectRepository.save(project);
+    }
+
+    public void deleteProject(Long projectId, User user) {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found"));
+
+        // Check if user is authorized to delete this project
+        if (!project.getUser().getId().equals(user.getId())) {
+            throw new RuntimeException("Unauthorized to delete this project");
+        }
+
+        // Remove any active sessions for this project
+        activeSessions.entrySet().removeIf(entry ->
+                entry.getValue().getProjectId() != null &&
+                        entry.getValue().getProjectId().equals(projectId));
+
+        // Delete the project
+        projectRepository.delete(project);
+    }
+
 
 
     public void splitVideo(String sessionId, String videoPath, double splitTime, String segmentId) throws IOException, InterruptedException {
@@ -261,6 +309,172 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
+    /**
+     * Updates an existing video split operation
+     */
+    public void updateSplitVideo(String sessionId, String segmentId, double newSplitTime) throws IOException, InterruptedException {
+        EditSession session = getSession(sessionId);
+
+        // Find the segment to update
+        VideoSegment segment = null;
+        int segmentIndex = -1;
+
+        for (int i = 0; i < session.getTimelineState().getSegments().size(); i++) {
+            VideoSegment s = session.getTimelineState().getSegments().get(i);
+            if (s.getId().equals(segmentId)) {
+                segment = s;
+                segmentIndex = i;
+                break;
+            }
+        }
+
+        if (segment == null) {
+            throw new RuntimeException("Segment not found with ID: " + segmentId);
+        }
+
+        // Check if there is a next segment that was part of the original split
+        if (segmentIndex >= session.getTimelineState().getSegments().size() - 1) {
+            throw new RuntimeException("Cannot update split: No subsequent segment found");
+        }
+
+        VideoSegment nextSegment = session.getTimelineState().getSegments().get(segmentIndex + 1);
+
+        // Verify the segments are from the same source video
+        if (!segment.getSourceVideoPath().equals(nextSegment.getSourceVideoPath())) {
+            throw new RuntimeException("Cannot update split: Segments are not from the same source video");
+        }
+
+        // Validate the new split time
+        double originalStartTime = segment.getStartTime();
+        double originalEndTime = nextSegment.getEndTime();
+
+        if (newSplitTime <= (originalStartTime + 0.1) ||
+                (originalEndTime != -1 && newSplitTime >= (originalEndTime - 0.1))) {
+            throw new RuntimeException("Invalid split point. Must be between " +
+                    (originalStartTime + 0.1) + " and " +
+                    (originalEndTime != -1 ? (originalEndTime - 0.1) : "end of video"));
+        }
+
+        // Update the segments
+        segment.setEndTime(newSplitTime);
+        nextSegment.setStartTime(newSplitTime);
+
+        // Update the operation in the timeline
+        for (EditOperation op : session.getTimelineState().getOperations()) {
+            if (op.getOperationType().equals("SPLIT") &&
+                    op.getSourceVideoPath().equals(segment.getSourceVideoPath())) {
+                op.setParameters(Map.of("splitTime", newSplitTime));
+                break;
+            }
+        }
+
+        // Update session timestamp
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    /**
+     * Removes a split by merging two adjacent segments
+     */
+    public void deleteSplitVideo(String sessionId, String firstSegmentId, String secondSegmentId) {
+        EditSession session = getSession(sessionId);
+
+        // Find the segments to merge
+        VideoSegment firstSegment = null;
+        VideoSegment secondSegment = null;
+        int firstIndex = -1;
+        int secondIndex = -1;
+
+        List<VideoSegment> segments = session.getTimelineState().getSegments();
+
+        for (int i = 0; i < segments.size(); i++) {
+            VideoSegment s = segments.get(i);
+            if (s.getId().equals(firstSegmentId)) {
+                firstSegment = s;
+                firstIndex = i;
+            } else if (s.getId().equals(secondSegmentId)) {
+                secondSegment = s;
+                secondIndex = i;
+            }
+        }
+
+        // Validate segments
+        if (firstSegment == null || secondSegment == null) {
+            throw new RuntimeException("One or both segments not found");
+        }
+
+        // Check if segments are adjacent
+        if (Math.abs(firstIndex - secondIndex) != 1) {
+            throw new RuntimeException("Segments must be adjacent to merge");
+        }
+
+        // Ensure segments are from the same source video
+        if (!firstSegment.getSourceVideoPath().equals(secondSegment.getSourceVideoPath())) {
+            throw new RuntimeException("Cannot merge segments from different source videos");
+        }
+
+        // Determine which segment comes first
+        VideoSegment earlier, later;
+        int earlierIndex, laterIndex;
+
+        if (firstIndex < secondIndex) {
+            earlier = firstSegment;
+            later = secondSegment;
+            earlierIndex = firstIndex;
+            laterIndex = secondIndex;
+        } else {
+            earlier = secondSegment;
+            later = firstSegment;
+            earlierIndex = secondIndex;
+            laterIndex = firstIndex;
+        }
+
+        // Create merged segment
+        VideoSegment mergedSegment = new VideoSegment();
+        mergedSegment.setId(UUID.randomUUID().toString());
+        mergedSegment.setSourceVideoPath(earlier.getSourceVideoPath());
+        mergedSegment.setStartTime(earlier.getStartTime());
+        mergedSegment.setEndTime(later.getEndTime());
+
+        // If either segment had position/scale information, preserve it
+        if (earlier.getPositionX() != null) {
+            mergedSegment.setPositionX(earlier.getPositionX());
+            mergedSegment.setPositionY(earlier.getPositionY());
+        } else if (later.getPositionX() != null) {
+            mergedSegment.setPositionX(later.getPositionX());
+            mergedSegment.setPositionY(later.getPositionY());
+        }
+
+        if (earlier.getScale() != null) {
+            mergedSegment.setScale(earlier.getScale());
+        } else if (later.getScale() != null) {
+            mergedSegment.setScale(later.getScale());
+        }
+
+        // Replace the two segments with the merged one
+        segments.remove(laterIndex);
+        segments.set(earlierIndex, mergedSegment);
+
+        // Remove the split operation from the timeline
+        session.getTimelineState().getOperations().removeIf(op ->
+                op.getOperationType().equals("SPLIT") &&
+                        op.getSourceVideoPath().equals(earlier.getSourceVideoPath()) &&
+                        op.getParameters().containsKey("splitTime") &&
+                        (double)op.getParameters().get("splitTime") == earlier.getEndTime());
+
+        // Create a merge operation
+        EditOperation mergeOp = new EditOperation();
+        mergeOp.setOperationType("MERGE");
+        mergeOp.setSourceVideoPath(earlier.getSourceVideoPath());
+        mergeOp.setParameters(Map.of(
+                "firstSegmentId", earlier.getId(),
+                "secondSegmentId", later.getId()
+        ));
+        session.getTimelineState().getOperations().add(mergeOp);
+
+        // Update session timestamp
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
         String fullPath = "videos/" + videoPath;
 
@@ -317,7 +531,6 @@ public class VideoEditingService {
         return 300; // Default to 5 minutes
     }
 
-
     public void saveProject(String sessionId) throws JsonProcessingException {
         EditSession session = getSession(sessionId);
         Project project = projectRepository.findById(session.getProjectId())
@@ -328,11 +541,17 @@ public class VideoEditingService {
         projectRepository.save(project);
     }
 
+    @Scheduled(fixedRate = 3600000) // Every hour
+    public void cleanupExpiredSessions() {
+        long expiryTime = System.currentTimeMillis() - 3600000;
+        activeSessions.entrySet().removeIf(entry ->
+                entry.getValue().getLastAccessTime() < expiryTime);
+    }
+
     private EditSession getSession(String sessionId) {
         return Optional.ofNullable(activeSessions.get(sessionId))
                 .orElseThrow(() -> new RuntimeException("No active session found"));
     }
-
 
 
     public void addVideoToTimeline(String sessionId, String videoPath, Integer layer, Double timelineStartTime, Double timelineEndTime)
@@ -431,6 +650,177 @@ public class VideoEditingService {
             throw e;
         }
     }
+    public void removeVideoSegment(String sessionId, String segmentId) {
+        // Log the incoming request parameters
+        System.out.println("removeVideoSegment called with sessionId: " + sessionId);
+        System.out.println("Segment ID: " + segmentId);
+
+        EditSession session = getSession(sessionId);
+
+        if (session == null) {
+            System.err.println("No active session found for sessionId: " + sessionId);
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        System.out.println("Session found, project ID: " + session.getProjectId());
+
+        // Find the segment with the given ID
+        VideoSegment segmentToRemove = null;
+        for (VideoSegment segment : session.getTimelineState().getSegments()) {
+            if (segment.getId().equals(segmentId)) {
+                segmentToRemove = segment;
+                break;
+            }
+        }
+
+        if (segmentToRemove == null) {
+            throw new RuntimeException("No segment found with ID: " + segmentId);
+        }
+
+        // Remove the segment from the timeline
+        session.getTimelineState().getSegments().remove(segmentToRemove);
+
+        // Create a REMOVE operation for tracking
+        EditOperation removeOperation = new EditOperation();
+        removeOperation.setOperationType("REMOVE");
+        removeOperation.setSourceVideoPath(segmentToRemove.getSourceVideoPath());
+        removeOperation.setParameters(Map.of(
+                "time", System.currentTimeMillis(),
+                "segmentId", segmentId
+        ));
+
+        session.getTimelineState().getOperations().add(removeOperation);
+        session.setLastAccessTime(System.currentTimeMillis());
+
+        System.out.println("Successfully removed video segment");
+    }
+
+    public void clearTimeline(String sessionId) {
+        // Log the incoming request parameters
+        System.out.println("clearTimeline called with sessionId: " + sessionId);
+
+        EditSession session = getSession(sessionId);
+
+        if (session == null) {
+            System.err.println("No active session found for sessionId: " + sessionId);
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        System.out.println("Session found, project ID: " + session.getProjectId());
+
+        // Create a CLEAR operation for tracking
+        EditOperation clearOperation = new EditOperation();
+        clearOperation.setOperationType("CLEAR");
+        clearOperation.setParameters(Map.of(
+                "time", System.currentTimeMillis(),
+                "segmentCount", session.getTimelineState().getSegments().size()
+        ));
+
+        // Clear the segments
+        session.getTimelineState().getSegments().clear();
+
+        // Add the clear operation
+        session.getTimelineState().getOperations().add(clearOperation);
+        session.setLastAccessTime(System.currentTimeMillis());
+
+        System.out.println("Successfully cleared timeline");
+    }
+
+    public void updateSegmentTiming(String sessionId, String segmentId,
+                                    Double timelineStartTime, Double timelineEndTime, Integer layer) {
+        // Log the incoming request parameters
+        System.out.println("updateSegmentTiming called with sessionId: " + sessionId);
+        System.out.println("Segment ID: " + segmentId);
+        System.out.println("Timeline start time: " + timelineStartTime + ", Timeline end time: " + timelineEndTime);
+        System.out.println("Layer: " + layer);
+
+        EditSession session = getSession(sessionId);
+
+        if (session == null) {
+            System.err.println("No active session found for sessionId: " + sessionId);
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        System.out.println("Session found, project ID: " + session.getProjectId());
+
+        // Find the segment with the given ID
+        VideoSegment segmentToUpdate = null;
+        for (VideoSegment segment : session.getTimelineState().getSegments()) {
+            if (segment.getId().equals(segmentId)) {
+                segmentToUpdate = segment;
+                break;
+            }
+        }
+
+        if (segmentToUpdate == null) {
+            throw new RuntimeException("No segment found with ID: " + segmentId);
+        }
+
+        // Store old values for validation
+        double oldStartTime = segmentToUpdate.getTimelineStartTime();
+        double oldEndTime = segmentToUpdate.getTimelineEndTime();
+        int oldLayer = segmentToUpdate.getLayer();
+
+        // Update the segment properties if provided
+        boolean updated = false;
+
+        if (timelineStartTime != null) {
+            segmentToUpdate.setTimelineStartTime(timelineStartTime);
+            updated = true;
+        }
+
+        if (timelineEndTime != null) {
+            segmentToUpdate.setTimelineEndTime(timelineEndTime);
+            updated = true;
+        }
+
+        if (layer != null) {
+            segmentToUpdate.setLayer(layer);
+            updated = true;
+        }
+
+        if (updated) {
+            // Check if the new position is valid
+            // First temporarily remove this segment from the list to avoid self-collision
+            session.getTimelineState().getSegments().remove(segmentToUpdate);
+
+            boolean positionAvailable = session.getTimelineState().isTimelinePositionAvailable(
+                    segmentToUpdate.getTimelineStartTime(),
+                    segmentToUpdate.getTimelineEndTime(),
+                    segmentToUpdate.getLayer());
+
+            // Add the segment back
+            session.getTimelineState().getSegments().add(segmentToUpdate);
+
+            if (!positionAvailable) {
+                // Revert changes if the new position overlaps with existing segments
+                segmentToUpdate.setTimelineStartTime(oldStartTime);
+                segmentToUpdate.setTimelineEndTime(oldEndTime);
+                segmentToUpdate.setLayer(oldLayer);
+                throw new RuntimeException("Timeline position overlaps with an existing segment");
+            }
+
+            // Create an UPDATE_TIMING operation for tracking
+            EditOperation updateOperation = new EditOperation();
+            updateOperation.setOperationType("UPDATE_TIMING");
+            updateOperation.setSourceVideoPath(segmentToUpdate.getSourceVideoPath());
+
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("time", System.currentTimeMillis());
+            parameters.put("segmentId", segmentId);
+            if (timelineStartTime != null) parameters.put("timelineStartTime", timelineStartTime);
+            if (timelineEndTime != null) parameters.put("timelineEndTime", timelineEndTime);
+            if (layer != null) parameters.put("layer", layer);
+            updateOperation.setParameters(parameters);
+
+            session.getTimelineState().getOperations().add(updateOperation);
+            session.setLastAccessTime(System.currentTimeMillis());
+
+            System.out.println("Successfully updated segment timing");
+        } else {
+            System.out.println("No timing parameters provided for update");
+        }
+    }
 
     public void updateVideoSegment(String sessionId, String segmentId,
                                    Integer positionX, Integer positionY, Double scale) {
@@ -493,6 +883,24 @@ public class VideoEditingService {
         System.out.println("Successfully updated video segment");
     }
 
+    public VideoSegment getVideoSegment(String sessionId, String segmentId) {
+        EditSession session = getSession(sessionId);
+
+        if (session == null) {
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        // Find the segment with the given ID
+        for (VideoSegment segment : session.getTimelineState().getSegments()) {
+            if (segment.getId().equals(segmentId)) {
+                return segment;
+            }
+        }
+
+        throw new RuntimeException("No segment found with ID: " + segmentId);
+    }
+
+
     public File exportProject(String sessionId) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
 
@@ -506,7 +914,7 @@ public class VideoEditingService {
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
         // Create default output path
-        String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "") + ""
+        String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "_") + "_"
                 + System.currentTimeMillis() + ".mp4";
         String outputPath = "exports/" + outputFileName;
 
@@ -544,9 +952,21 @@ public class VideoEditingService {
 
         System.out.println("Rendering final video to: " + outputPath);
 
-        // Validate timeline
-        if (timelineState.getSegments() == null || timelineState.getSegments().isEmpty()) {
-            throw new RuntimeException("Cannot export empty timeline");
+        // Validate timeline - allow empty segments at beginning and end
+        boolean hasContent = (timelineState.getSegments() != null && !timelineState.getSegments().isEmpty()) ||
+                (timelineState.getTextSegments() != null && !timelineState.getTextSegments().isEmpty()) ||
+                (timelineState.getImageSegments() != null && !timelineState.getImageSegments().isEmpty());
+
+        if (!hasContent) {
+            throw new RuntimeException("Cannot export completely empty timeline");
+        }
+
+        // Use canvas dimensions from timelineState if available
+        if (timelineState.getCanvasWidth() != null) {
+            canvasWidth = timelineState.getCanvasWidth();
+        }
+        if (timelineState.getCanvasHeight() != null) {
+            canvasHeight = timelineState.getCanvasHeight();
         }
 
         // Create a temporary directory for intermediate files
@@ -557,26 +977,39 @@ public class VideoEditingService {
 
         // Find all unique timeline ranges where composition changes
         Set<Double> timePoints = new TreeSet<>();
-        for (VideoSegment segment : timelineState.getSegments()) {
-            timePoints.add(segment.getTimelineStartTime());
-            timePoints.add(segment.getTimelineEndTime());
-        }
+        timePoints.add(0.0); // Start from time 0
 
-        // Add image segments time points
-        for (ImageSegment imgSegment : timelineState.getImageSegments()) {
-            timePoints.add(imgSegment.getTimelineStartTime());
-            timePoints.add(imgSegment.getTimelineEndTime());
-        }
+        double maxEndTime = 0;
 
-        // Add text segment time points if you have them
-        for (TextSegment textSegment : timelineState.getTextSegments()) {
-            timePoints.add(textSegment.getTimelineStartTime());
-            timePoints.add(textSegment.getTimelineEndTime());
+        // Add time points from video, text, and image segments
+        if (timelineState.getSegments() != null) {
+            for (VideoSegment segment : timelineState.getSegments()) {
+                timePoints.add(segment.getTimelineStartTime());
+                timePoints.add(segment.getTimelineEndTime());
+                maxEndTime = Math.max(maxEndTime, segment.getTimelineEndTime());
+            }
+        }
+        if (timelineState.getTextSegments() != null) {
+            for (TextSegment textSegment : timelineState.getTextSegments()) {
+                timePoints.add(textSegment.getTimelineStartTime());
+                timePoints.add(textSegment.getTimelineEndTime());
+                maxEndTime = Math.max(maxEndTime, textSegment.getTimelineEndTime());
+            }
+        }
+        if (timelineState.getImageSegments() != null) {
+            for (ImageSegment imgSegment : timelineState.getImageSegments()) {
+                timePoints.add(imgSegment.getTimelineStartTime());
+                timePoints.add(imgSegment.getTimelineEndTime());
+                maxEndTime = Math.max(maxEndTime, imgSegment.getTimelineEndTime());
+            }
         }
 
         // Sort time points
         List<Double> sortedTimePoints = new ArrayList<>(timePoints);
         Collections.sort(sortedTimePoints);
+
+        System.out.println("Total video duration will be: " + maxEndTime + " seconds");
+        System.out.println("Time points: " + sortedTimePoints);
 
         // Create a list to store intermediate files
         List<File> intermediateFiles = new ArrayList<>();
@@ -591,221 +1024,91 @@ public class VideoEditingService {
                 continue;
             }
 
-            // Find all video segments visible in this time range
+            System.out.println("Processing time segment: " + segmentStart + " to " + segmentEnd);
+
+            // Find all video, text, and image segments visible in this time range
             List<VideoSegment> visibleSegments = new ArrayList<>();
-            for (VideoSegment segment : timelineState.getSegments()) {
-                if (segment.getTimelineStartTime() <= segmentEnd &&
-                        segment.getTimelineEndTime() >= segmentStart) {
-                    visibleSegments.add(segment);
-                }
-            }
-
-            // Find all image segments visible in this time range
+            List<TextSegment> visibleTextSegments = new ArrayList<>();
             List<ImageSegment> visibleImages = new ArrayList<>();
-            for (ImageSegment imgSegment : timelineState.getImageSegments()) {
-                if (imgSegment.getTimelineStartTime() <= segmentEnd &&
-                        imgSegment.getTimelineEndTime() >= segmentStart) {
-                    visibleImages.add(imgSegment);
+
+            if (timelineState.getSegments() != null) {
+                for (VideoSegment segment : timelineState.getSegments()) {
+                    if (segment.getTimelineStartTime() < segmentEnd &&
+                            segment.getTimelineEndTime() > segmentStart) {
+                        visibleSegments.add(segment);
+                    }
                 }
             }
-
-            // Skip if no segments in this time range
-            if (visibleSegments.isEmpty() && visibleImages.isEmpty()) {
-                continue;
+            if (timelineState.getTextSegments() != null) {
+                for (TextSegment textSegment : timelineState.getTextSegments()) {
+                    if (textSegment.getTimelineStartTime() < segmentEnd &&
+                            textSegment.getTimelineEndTime() > segmentStart) {
+                        visibleTextSegments.add(textSegment);
+                    }
+                }
+            }
+            if (timelineState.getImageSegments() != null) {
+                for (ImageSegment imgSegment : timelineState.getImageSegments()) {
+                    if (imgSegment.getTimelineStartTime() < segmentEnd &&
+                            imgSegment.getTimelineEndTime() > segmentStart) {
+                        visibleImages.add(imgSegment);
+                    }
+                }
             }
 
             // Sort by layer (lower layers first)
             Collections.sort(visibleSegments, Comparator.comparingInt(VideoSegment::getLayer));
+            Collections.sort(visibleTextSegments, Comparator.comparingInt(TextSegment::getLayer));
             Collections.sort(visibleImages, Comparator.comparingInt(ImageSegment::getLayer));
 
             // Create a temporary file for this time segment
             String tempFilename = "temp_" + UUID.randomUUID().toString() + ".mp4";
             File tempFile = new File(tempDir, tempFilename);
-            intermediateFiles.add(tempFile);
 
-            // Build FFmpeg command
-            List<String> command = new ArrayList<>();
-            command.add(ffmpegPath);
+            // Check if this segment has any content at all
+            boolean hasVisibleContent = !visibleSegments.isEmpty() || !visibleTextSegments.isEmpty() || !visibleImages.isEmpty();
 
-            // Add each video source as input
-            for (VideoSegment segment : visibleSegments) {
-                command.add("-i");
-                command.add("videos/" + segment.getSourceVideoPath());
+            if (!hasVisibleContent) {
+                // For empty segments, create a black video with the correct duration
+                renderEmptySegment(tempFile, segmentStart, segmentEnd, canvasWidth, canvasHeight);
+            } else {
+                // For segments with content, use the complex filter approach
+                renderContentSegment(tempFile, segmentStart, segmentEnd, visibleSegments,
+                        visibleTextSegments, visibleImages, canvasWidth, canvasHeight);
             }
 
-            // Add each image as an input
-            for (ImageSegment imgSegment : visibleImages) {
-                command.add("-i");
-                command.add("images/" + imgSegment.getImagePath());
-            }
-
-            // Create complex filter for compositing
-            StringBuilder filterComplex = new StringBuilder();
-
-            // Create background
-            filterComplex.append("color=black:size=").append(canvasWidth).append("x").append(canvasHeight)
-                    .append(":duration=").append(segmentEnd - segmentStart).append("[bg];");
-
-            // Process each visible segment
-            String lastOutput = "bg";
-            for (int j = 0; j < visibleSegments.size(); j++) {
-                VideoSegment segment = visibleSegments.get(j);
-
-                // Calculate offset for trimming
-                double relativeStartTime = segment.getStartTime() + (segmentStart - segment.getTimelineStartTime());
-                double trimDuration = segmentEnd - segmentStart;
-
-                // Get all filters for this segment
-                List<String> segmentFilters = getFiltersForSegment(timelineState, segment.getId());
-
-                // Create scale and trim filters
-                filterComplex.append("[").append(j).append(":v]");
-                filterComplex.append("trim=").append(relativeStartTime).append(":")
-                        .append(relativeStartTime + trimDuration).append(",");
-                filterComplex.append("setpts=PTS-STARTPTS,");
-
-                // Apply segment-specific filters
-                if (!segmentFilters.isEmpty()) {
-                    for (String filter : segmentFilters) {
-                        filterComplex.append(filter).append(",");
-                    }
-                }
-
-                // Add scaling
-                filterComplex.append("scale=iw*").append(segment.getScale()).append(":ih*").append(segment.getScale());
-                filterComplex.append("[v").append(j).append("];");
-
-                // Overlay this layer on top of previous layers
-                String nextOutput = (j == visibleSegments.size() - 1 && visibleImages.isEmpty()) ? "vout" : "v" + (j + 10);
-
-                String overlayX = "(W-w)/2+" + segment.getPositionX();
-                String overlayY = "(H-h)/2+" + segment.getPositionY();
-
-                filterComplex.append("[").append(lastOutput).append("][v").append(j).append("]");
-                filterComplex.append("overlay=").append(overlayX).append(":").append(overlayY);
-
-                if (j < visibleSegments.size() - 1 || !visibleImages.isEmpty()) {
-                    filterComplex.append("[").append(nextOutput).append("];");
-                } else {
-                    filterComplex.append("[").append(nextOutput).append("];");
-                }
-
-                lastOutput = nextOutput;
-            }
-
-            // Process each visible image
-            int imgInputIndex = visibleSegments.size(); // Start after video inputs
-            for (int j = 0; j < visibleImages.size(); j++) {
-                ImageSegment imgSegment = visibleImages.get(j);
-
-                // Create an input for the image that lasts for the required duration
-                filterComplex.append("[").append(imgInputIndex + j).append(":v]");
-
-                // Generate and apply all filters for this image
-                String imageFilters = generateImageFilters(imgSegment);
-                filterComplex.append(imageFilters);
-
-                filterComplex.append("[img").append(j).append("];");
-
-                // Overlay this image on top of previous layers
-                String nextOutput = (j == visibleImages.size() - 1) ? "vout" : "v" + (j + 20);
-
-                String overlayX = "(W-w)/2+" + imgSegment.getPositionX();
-                String overlayY = "(H-h)/2+" + imgSegment.getPositionY();
-
-            // Calculate the relative start and end times within this segment
-                double relativeStart = Math.max(0, imgSegment.getTimelineStartTime() - segmentStart);
-                double relativeEnd = Math.min(segmentEnd - segmentStart, imgSegment.getTimelineEndTime() - segmentStart);
-
-                filterComplex.append("[").append(lastOutput).append("][img").append(j).append("]");
-                filterComplex.append("overlay=").append(overlayX).append(":")
-                        .append(overlayY)
-                        .append(":enable='between(t,").append(relativeStart).append(",").append(relativeEnd).append(")'");
-
-                filterComplex.append("[").append(nextOutput).append("];");
-                lastOutput = nextOutput;
-            }
-
-
-            // Ensure the final output is mapped to "vout"
-            if (!lastOutput.equals("vout")) {
-                filterComplex.append("[").append(lastOutput).append("]setpts=PTS-STARTPTS[vout];");
-            }
-
-            // Process each visible segment - AUDIO
-            for (int j = 0; j < visibleSegments.size(); j++) {
-                VideoSegment segment = visibleSegments.get(j);
-
-                // Calculate offset for trimming
-                double relativeStartTime = segment.getStartTime() + (segmentStart - segment.getTimelineStartTime());
-                double trimDuration = segmentEnd - segmentStart;
-
-                // Create trim filters for audio
-                filterComplex.append("[").append(j).append(":a]");
-                filterComplex.append("atrim=").append(relativeStartTime).append(":")
-                        .append(relativeStartTime + trimDuration).append(",");
-                filterComplex.append("asetpts=PTS-STARTPTS");
-                filterComplex.append("[a").append(j).append("];");
-            }
-
-            // Mix all audio streams together
-            if (visibleSegments.size() > 0) {
-                // First check if all inputs have audio
-                for (int j = 0; j < visibleSegments.size(); j++) {
-                    filterComplex.append("[a").append(j).append("]");
-                }
-
-                // Add the amix filter with normalize=0 to preserve volume
-                filterComplex.append("amix=inputs=").append(visibleSegments.size()).append(":duration=longest:dropout_transition=0:normalize=0[aout]");
-            }
-
-            // Add filter_complex to command
-            command.add("-filter_complex");
-            command.add(filterComplex.toString());
-
-            // Map the video and audio outputs
-            command.add("-map");
-            command.add("[vout]");
-
-            // Only map audio if there are audio streams
-            if (visibleSegments.size() > 0) {
-                command.add("-map");
-                command.add("[aout]");
-            }
-
-            // Output settings
-            command.add("-c:v");
-            command.add("libx264");
-            command.add("-c:a");
-            command.add("aac");
-            command.add("-shortest");
-            command.add("-y");
-            command.add(tempFile.getAbsolutePath());
-
-            // Execute the command
-            ProcessBuilder processBuilder = new ProcessBuilder(command);
-            processBuilder.redirectErrorStream(true);
-            Process process = processBuilder.start();
-
-            // Log the process output
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    System.out.println("FFmpeg process: " + line);
-                }
-            }
-
-            int exitCode = process.waitFor();
-            if (exitCode != 0) {
-                throw new RuntimeException("FFmpeg process failed with exit code: " + exitCode);
+            // Add to intermediate files if successful
+            if (tempFile.exists() && tempFile.length() > 0) {
+                intermediateFiles.add(tempFile);
+            } else {
+                System.out.println("Warning: Failed to create segment: " + segmentStart + " to " + segmentEnd);
             }
         }
 
-        // Create a temporary file for the FFmpeg concat script
+        // Skip concatenation if there's only one intermediate file
+        if (intermediateFiles.size() == 1) {
+            File singleFile = intermediateFiles.get(0);
+            try {
+                Files.copy(singleFile.toPath(), new File(outputPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
+                singleFile.delete();
+                return outputPath;
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to copy single output file: " + e.getMessage(), e);
+            }
+        }
+
+        // Make sure we have files to concatenate
+        if (intermediateFiles.isEmpty()) {
+            throw new RuntimeException("No intermediate files were created successfully");
+        }
+
+        // Concatenate all intermediate files
         File concatFile = File.createTempFile("ffmpeg-concat-", ".txt");
         try (PrintWriter writer = new PrintWriter(new FileWriter(concatFile))) {
             for (File file : intermediateFiles) {
-                writer.println("file '" + file.getAbsolutePath().replace("\\", "\\\\") + "'");
+                if (file.exists() && file.length() > 0) {
+                    writer.println("file '" + file.getAbsolutePath().replace("\\", "\\\\") + "'");
+                }
             }
         }
 
@@ -834,13 +1137,18 @@ public class VideoEditingService {
         command.add("128k");
 
         // Output file
-        command.add("-y"); // Overwrite if exists
+        command.add("-y");
         command.add(outputPath);
 
         // Execute concat command
         System.out.println("Executing FFmpeg concat command: " + String.join(" ", command));
         ProcessBuilder concatBuilder = new ProcessBuilder(command);
         concatBuilder.redirectErrorStream(true);
+
+        // Set environment variables for fontconfig
+        Map<String, String> env = concatBuilder.environment();
+        env.put("FONTCONFIG_PATH", System.getProperty("user.dir"));
+
         Process concatProcess = concatBuilder.start();
 
         // Log the concat process output
@@ -851,7 +1159,14 @@ public class VideoEditingService {
             }
         }
 
-        int exitCode = concatProcess.waitFor();
+        // Use a timeout to prevent hanging
+        boolean completed = concatProcess.waitFor(5, TimeUnit.MINUTES);
+        if (!completed) {
+            concatProcess.destroyForcibly();
+            throw new RuntimeException("FFmpeg concat process timed out after 5 minutes");
+        }
+
+        int exitCode = concatProcess.exitValue();
         if (exitCode != 0) {
             throw new RuntimeException("FFmpeg concat process failed with exit code: " + exitCode);
         }
@@ -864,6 +1179,309 @@ public class VideoEditingService {
 
         return outputPath;
     }
+
+    // Helper method to render an empty (black) segment
+    private void renderEmptySegment(File outputFile, double startTime, double endTime, int width, int height)
+            throws IOException, InterruptedException {
+
+        double duration = endTime - startTime;
+        System.out.println("Rendering empty segment from " + startTime + " to " + endTime +
+                " (duration: " + duration + " seconds)");
+
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+
+        // Generate a simple black frame video with the correct duration
+        command.add("-f");
+        command.add("lavfi");
+        command.add("-i");
+        command.add("color=c=black:s=" + width + "x" + height + ":r=30:d=" + duration);
+
+        // Output settings
+        command.add("-c:v");
+        command.add("libx264");
+        command.add("-preset");
+        command.add("ultrafast"); // Use ultrafast for empty segments
+        command.add("-pix_fmt");
+        command.add("yuv420p");
+        command.add("-y");
+        command.add(outputFile.getAbsolutePath());
+
+        // Execute the FFmpeg command
+        System.out.println("Executing FFmpeg command for empty segment: " + String.join(" ", command));
+        executeFFmpegCommand(command);
+    }
+
+    // Helper method to render a segment with content
+    private void renderContentSegment(File outputFile, double segmentStart, double segmentEnd,
+                                      List<VideoSegment> visibleSegments, List<TextSegment> visibleTextSegments,
+                                      List<ImageSegment> visibleImages, int canvasWidth, int canvasHeight)
+            throws IOException, InterruptedException {
+
+        double segmentDuration = segmentEnd - segmentStart;
+
+        // Build FFmpeg command
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+
+        // Add inputs for video and image segments
+        for (VideoSegment segment : visibleSegments) {
+            String videoPath = "videos/" + segment.getSourceVideoPath();
+            // Verify file exists to avoid FFmpeg errors
+            if (new File(videoPath).exists()) {
+                command.add("-i");
+                command.add(videoPath);
+            } else {
+                System.out.println("Warning: Video file not found: " + videoPath);
+                // You might want to handle this differently, by skipping the segment or using a placeholder
+            }
+        }
+
+        for (ImageSegment imgSegment : visibleImages) {
+            String imagePath = "images/" + imgSegment.getImagePath();
+            // Verify file exists to avoid FFmpeg errors
+            if (new File(imagePath).exists()) {
+                command.add("-i");
+                command.add(imagePath);
+            } else {
+                System.out.println("Warning: Image file not found: " + imagePath);
+            }
+        }
+
+        // Create complex filter for compositing
+        StringBuilder filterComplex = new StringBuilder();
+
+        // Start with a black background for the entire segment duration
+        filterComplex.append("color=c=black:s=").append(canvasWidth).append("x").append(canvasHeight)
+                .append(":d=").append(segmentDuration).append(",format=yuv420p[bg];");
+
+        // Process visible video segments
+        String lastOutput = "bg";
+        int validVideoInputs = 0;
+
+        for (int j = 0; j < visibleSegments.size(); j++) {
+            VideoSegment segment = visibleSegments.get(j);
+            String videoPath = "videos/" + segment.getSourceVideoPath();
+
+            // Skip if file doesn't exist
+            if (!new File(videoPath).exists()) {
+                continue;
+            }
+
+            // Calculate offset for trimming
+            double relativeStartTime = segment.getStartTime();
+            if (segmentStart > segment.getTimelineStartTime()) {
+                relativeStartTime += (segmentStart - segment.getTimelineStartTime());
+            }
+            double trimDuration = Math.min(segmentEnd, segment.getTimelineEndTime()) -
+                    Math.max(segmentStart, segment.getTimelineStartTime());
+
+            // Create scale and trim filters
+            filterComplex.append("[").append(validVideoInputs).append(":v]");
+            filterComplex.append("trim=").append(relativeStartTime).append(":")
+                    .append(relativeStartTime + trimDuration).append(",");
+            filterComplex.append("setpts=PTS-STARTPTS,");
+            filterComplex.append("scale=iw*").append(segment.getScale()).append(":ih*").append(segment.getScale());
+            filterComplex.append("[v").append(j).append("];");
+
+            // Overlay this layer on top of previous layers
+            String nextOutput = "v" + (j + 10);
+            String overlayX = "(W-w)/2+" + segment.getPositionX();
+            String overlayY = "(H-h)/2+" + segment.getPositionY();
+
+            filterComplex.append("[").append(lastOutput).append("][v").append(j).append("]");
+            filterComplex.append("overlay=").append(overlayX).append(":").append(overlayY)
+                    .append(":enable='between(t,").append(Math.max(0, segment.getTimelineStartTime() - segmentStart))
+                    .append(",").append(Math.min(segmentDuration, segment.getTimelineEndTime() - segmentStart))
+                    .append(")'");
+            filterComplex.append("[").append(nextOutput).append("];");
+
+            lastOutput = nextOutput;
+            validVideoInputs++;
+        }
+
+        // Process each visible text segment
+        for (int j = 0; j < visibleTextSegments.size(); j++) {
+            TextSegment textSegment = visibleTextSegments.get(j);
+
+            // Create a unique output label for this text segment
+            String nextOutput = (j == visibleTextSegments.size() - 1 && visibleImages.isEmpty()) ? "vout" : "text" + (j + 1);
+
+            // Calculate the relative start and end times within this segment
+            double relativeStart = Math.max(0, textSegment.getTimelineStartTime() - segmentStart);
+            double relativeEnd = Math.min(segmentDuration, textSegment.getTimelineEndTime() - segmentStart);
+
+            // Add drawtext filter for the text segment
+            filterComplex.append("[").append(lastOutput).append("]");
+            filterComplex.append("drawtext=text='").append(escapeText(textSegment.getText())).append("':");
+            filterComplex.append("enable='between(t,").append(relativeStart).append(",").append(relativeEnd).append(")':");
+            filterComplex.append("fontcolor=").append(textSegment.getFontColor()).append(":");
+            filterComplex.append("fontsize=").append(textSegment.getFontSize()).append(":");
+            filterComplex.append("x=").append(textSegment.getPositionX()).append(":");
+            filterComplex.append("y=").append(textSegment.getPositionY());
+            filterComplex.append("[").append(nextOutput).append("];");
+
+            lastOutput = nextOutput;
+        }
+
+        // Process each visible image
+        int imgInputIndex = validVideoInputs; // Start after valid video inputs
+        int validImageInputs = 0;
+
+        for (int j = 0; j < visibleImages.size(); j++) {
+            ImageSegment imgSegment = visibleImages.get(j);
+            String imagePath = "images/" + imgSegment.getImagePath();
+
+            // Skip if file doesn't exist
+            if (!new File(imagePath).exists()) {
+                continue;
+            }
+
+            // Create a unique output label for this image segment
+            String nextOutput = (j == visibleImages.size() - 1) ? "vout" : "img" + (j + 1);
+
+            // Generate and apply all filters for this image
+            String imageFilters = generateImageFilters(imgSegment);
+
+            filterComplex.append("[").append(imgInputIndex + validImageInputs).append(":v]");
+            filterComplex.append(imageFilters);
+            filterComplex.append("[img_filtered").append(j).append("];");
+
+            // Overlay this image on top of previous layers
+            String overlayX = "(W-w)/2+" + imgSegment.getPositionX();
+            String overlayY = "(H-h)/2+" + imgSegment.getPositionY();
+
+            // Calculate the relative start and end times within this segment
+            double relativeStart = Math.max(0, imgSegment.getTimelineStartTime() - segmentStart);
+            double relativeEnd = Math.min(segmentDuration, imgSegment.getTimelineEndTime() - segmentStart);
+
+            filterComplex.append("[").append(lastOutput).append("][img_filtered").append(j).append("]");
+            filterComplex.append("overlay=").append(overlayX).append(":")
+                    .append(overlayY)
+                    .append(":enable='between(t,").append(relativeStart).append(",").append(relativeEnd).append(")'");
+            filterComplex.append("[").append(nextOutput).append("];");
+
+            lastOutput = nextOutput;
+            validImageInputs++;
+        }
+
+        // Ensure the final output is mapped to "vout"
+        if (!lastOutput.equals("vout")) {
+            filterComplex.append("[").append(lastOutput).append("]setpts=PTS-STARTPTS[vout];");
+        }
+
+        // Process audio if there are video segments with audio
+        boolean hasAudio = false;
+        int validAudioInputs = 0;
+
+        for (int j = 0; j < visibleSegments.size(); j++) {
+            VideoSegment segment = visibleSegments.get(j);
+            String videoPath = "videos/" + segment.getSourceVideoPath();
+
+            // Check if file exists
+            if (new File(videoPath).exists()) {
+                hasAudio = true;
+
+                // Calculate offset for trimming
+                double relativeStartTime = segment.getStartTime();
+                if (segmentStart > segment.getTimelineStartTime()) {
+                    relativeStartTime += (segmentStart - segment.getTimelineStartTime());
+                }
+                double trimDuration = Math.min(segmentEnd, segment.getTimelineEndTime()) -
+                        Math.max(segmentStart, segment.getTimelineStartTime());
+
+                // Create trim filters for audio
+                filterComplex.append("[").append(validAudioInputs).append(":a?]");
+                filterComplex.append("atrim=").append(relativeStartTime).append(":")
+                        .append(relativeStartTime + trimDuration).append(",");
+                filterComplex.append("asetpts=PTS-STARTPTS");
+                filterComplex.append("[a").append(j).append("];");
+
+                validAudioInputs++;
+            }
+        }
+
+        // Mix all audio streams together
+        if (validAudioInputs > 0) {
+            filterComplex.append("[a0]");
+            for (int j = 1; j < validAudioInputs; j++) {
+                filterComplex.append("[a").append(j).append("]");
+            }
+            filterComplex.append("amix=inputs=").append(validAudioInputs).append(":duration=longest:dropout_transition=0[aout]");
+        }
+
+        // Add filter_complex to command
+        command.add("-filter_complex");
+        command.add(filterComplex.toString());
+
+        // Map outputs correctly
+        command.add("-map");
+        command.add("[vout]");
+
+        if (hasAudio && validAudioInputs > 0) {
+            command.add("-map");
+            command.add("[aout]");
+        }
+
+        // Output settings
+        command.add("-c:v");
+        command.add("libx264");
+        command.add("-pix_fmt");
+        command.add("yuv420p");
+
+        if (hasAudio && validAudioInputs > 0) {
+            command.add("-c:a");
+            command.add("aac");
+        }
+
+        command.add("-shortest");
+        command.add("-y");
+        command.add(outputFile.getAbsolutePath());
+
+        // Execute the FFmpeg command
+        System.out.println("Executing FFmpeg command for content segment: " + String.join(" ", command));
+        executeFFmpegCommand(command);
+    }
+
+    // Helper method to escape text for FFmpeg filters
+    private String escapeText(String text) {
+        if (text == null) return "";
+        return text.replace("'", "\\'").replace(":", "\\:").replace(",", "\\,");
+    }
+
+    // Helper method to execute an FFmpeg command
+    private void executeFFmpegCommand(List<String> command) throws IOException, InterruptedException {
+        ProcessBuilder processBuilder = new ProcessBuilder(command);
+        processBuilder.redirectErrorStream(true);
+
+        // Set environment variables for fontconfig
+        Map<String, String> env = processBuilder.environment();
+        env.put("FONTCONFIG_PATH", System.getProperty("user.dir"));
+
+        Process process = processBuilder.start();
+
+        // Log the process output
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("FFmpeg process: " + line);
+            }
+        }
+
+        // Use a timeout to prevent hanging
+        boolean completed = process.waitFor(5, TimeUnit.MINUTES);
+        if (!completed) {
+            process.destroyForcibly();
+            throw new RuntimeException("FFmpeg process timed out after 5 minutes");
+        }
+
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+            throw new RuntimeException("FFmpeg process failed with exit code: " + exitCode);
+        }
+    }
+
+    //    Filters.......................................................................................
     // Helper method to get all filters for a specific segment
     private List<String> getFiltersForSegment(TimelineState timelineState, String segmentId) {
         return timelineState.getOperations().stream()
@@ -1263,7 +1881,99 @@ public class VideoEditingService {
                 .collect(Collectors.toList());
     }
 
-    // Determine if an operation applies to a specific segment
+    public boolean updateFilter(String sessionId, String filterId, String videoPath, String segmentId,
+                                String filterType, Map<String, Object> filterParams) {
+        // Get the session (no need to expose this method)
+        EditSession session = getSession(sessionId);
+
+        // Find the matching filter operation
+        boolean found = false;
+        boolean removed = false;
+
+        for (EditOperation op : session.getTimelineState().getOperations()) {
+            if ("FILTER".equals(op.getOperationType()) &&
+                    filterId.equals(op.getParameters().get("filterId"))) {
+                // Found the filter - remove it
+                session.getTimelineState().getOperations().remove(op);
+                removed = true;
+                found = true;
+                break;
+            }
+        }
+
+        // If found and removed, apply the new filter
+        if (found && removed) {
+            try {
+                // Apply the new filter
+                applyFilter(sessionId, videoPath, segmentId, filterType, filterParams);
+                return true;
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to apply updated filter: " + e.getMessage());
+            }
+        }
+
+        return false;
+    }
+
+    public boolean removeFilter(String sessionId, String filterId) {
+        // Get the session
+        EditSession session = getSession(sessionId);
+
+        // Find and remove the filter
+        boolean removed = false;
+        for (EditOperation op : new ArrayList<>(session.getTimelineState().getOperations())) {
+            if ("FILTER".equals(op.getOperationType()) &&
+                    filterId.equals(op.getParameters().get("filterId"))) {
+                session.getTimelineState().getOperations().remove(op);
+                removed = true;
+                break;
+            }
+        }
+
+        if (removed) {
+            session.setLastAccessTime(System.currentTimeMillis());
+        }
+
+        return removed;
+    }
+
+    public Map<String, Object> removeAllFiltersFromSegment(String sessionId, String segmentId) {
+        // Get the session
+        EditSession session = getSession(sessionId);
+
+        // Find all filters for this segment and get their IDs
+        List<String> removedFilterIds = new ArrayList<>();
+        for (EditOperation op : new ArrayList<>(session.getTimelineState().getOperations())) {
+            if ("FILTER".equals(op.getOperationType()) &&
+                    segmentId.equals(op.getParameters().get("segmentId"))) {
+                String filterId = (String) op.getParameters().get("filterId");
+                removedFilterIds.add(filterId);
+            }
+        }
+
+        // Now remove the filters
+        boolean removed = false;
+        for (EditOperation op : new ArrayList<>(session.getTimelineState().getOperations())) {
+            if ("FILTER".equals(op.getOperationType()) &&
+                    segmentId.equals(op.getParameters().get("segmentId"))) {
+                session.getTimelineState().getOperations().remove(op);
+                removed = true;
+            }
+        }
+
+        if (removed) {
+            session.setLastAccessTime(System.currentTimeMillis());
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("removed", removed);
+        result.put("removedFilterIds", removedFilterIds);
+
+        return result;
+    }
+
+
+        // Determine if an operation applies to a specific segment
     private boolean isOperationApplicableToSegment(EditOperation operation, String segmentId) {
         String operationType = operation.getOperationType();
 
@@ -1586,4 +2296,251 @@ public class VideoEditingService {
         // Save the updated timeline state
         saveTimelineState(sessionId, timelineState);
     }
+
+//    ADD TEXT ..............................................................................................................
+
+    // Add this method to handle adding text to the timeline
+    public void addTextToTimeline(String sessionId, String text, int layer, double timelineStartTime, double timelineEndTime,
+                                  String fontFamily, int fontSize, String fontColor, String backgroundColor,
+                                  int positionX, int positionY) {
+        EditSession session = getSession(sessionId);
+
+        // Check if the position is available first
+        if (!session.getTimelineState().isTimelinePositionAvailable(timelineStartTime, timelineEndTime, layer)) {
+            throw new IllegalArgumentException("Cannot add text: position overlaps with existing element in layer " + layer);
+        }
+
+        TextSegment textSegment = new TextSegment();
+        textSegment.setText(text);
+        textSegment.setLayer(layer);
+        textSegment.setTimelineStartTime(timelineStartTime);
+        textSegment.setTimelineEndTime(timelineEndTime);
+        textSegment.setFontFamily(fontFamily);
+        textSegment.setFontSize(fontSize);
+        textSegment.setFontColor(fontColor);
+        textSegment.setBackgroundColor(backgroundColor);
+        textSegment.setPositionX(positionX);
+        textSegment.setPositionY(positionY);
+
+        session.getTimelineState().getTextSegments().add(textSegment);
+
+        // Create an ADD operation for tracking
+        EditOperation addOperation = new EditOperation();
+        addOperation.setOperationType("ADD_TEXT");
+        addOperation.setParameters(Map.of(
+                "time", System.currentTimeMillis(),
+                "layer", layer,
+                "timelineStartTime", timelineStartTime,
+                "timelineEndTime", timelineEndTime
+        ));
+
+        session.getTimelineState().getOperations().add(addOperation);
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    // Add this method to handle updating text segments
+    public void updateTextSegment(String sessionId, String segmentId, String text,
+                                  String fontFamily, Integer fontSize, String fontColor,
+                                  String backgroundColor, Integer positionX, Integer positionY) {
+        EditSession session = getSession(sessionId);
+
+        TextSegment textSegment = session.getTimelineState().getTextSegments().stream()
+                .filter(segment -> segment.getId().equals(segmentId))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Text segment not found"));
+
+        if (text != null) textSegment.setText(text);
+        if (fontFamily != null) textSegment.setFontFamily(fontFamily);
+        if (fontSize != null) textSegment.setFontSize(fontSize);
+        if (fontColor != null) textSegment.setFontColor(fontColor);
+        if (backgroundColor != null) textSegment.setBackgroundColor(backgroundColor);
+        if (positionX != null) textSegment.setPositionX(positionX);
+        if (positionY != null) textSegment.setPositionY(positionY);
+
+        // Create an UPDATE operation for tracking
+        EditOperation updateOperation = new EditOperation();
+        updateOperation.setOperationType("UPDATE_TEXT");
+        updateOperation.setParameters(Map.of(
+                "time", System.currentTimeMillis(),
+                "segmentId", segmentId
+        ));
+
+        session.getTimelineState().getOperations().add(updateOperation);
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    private String getFontPathByFamily(String fontFamily) {
+//        // Default font path if nothing else matches
+//        String defaultFontPath = "C:/Windows/Fonts/Arial.ttf";
+        // Default font path
+        String defaultFontPath = getSystemDefaultFontPath();
+
+        if (fontFamily == null || fontFamily.trim().isEmpty()) {
+            return defaultFontPath;
+        }
+        // Get platform-specific font directory
+        String fontDirectory = getSystemFontDirectory();
+
+        // Platform-specific font file extensions
+        Map<String, String> fontExtensions = getPlatformFontExtensions();
+
+
+        // Map common font families to their file paths
+        // You can expand this map with more fonts as needed
+//        Map<String, String> fontMap = new HashMap<>();
+//        fontMap.put("Arial", "C\\:/Windows/Fonts/Arial.ttf");
+//        fontMap.put("Times New Roman", "C\\:/Windows/Fonts/times.ttf");
+//        fontMap.put("Courier New", "C\\:/Windows/Fonts/cour.ttf");
+//        fontMap.put("Calibri", "C\\:/Windows/Fonts/calibri.ttf");
+//        fontMap.put("Verdana", "C\\:/Windows/Fonts/verdana.ttf");
+//        fontMap.put("Georgia", "C\\:/Windows/Fonts/georgia.ttf");
+//        fontMap.put("Comic Sans MS", "C\\:/Windows/Fonts/comic.ttf");
+//        fontMap.put("Impact", "C\\:/Windows/Fonts/impact.ttf");
+//        fontMap.put("Tahoma", "C\\:/Windows/Fonts/tahoma.ttf");
+
+        // Map common font families to their file names (without full paths)
+        Map<String, String> fontMap = new HashMap<>();
+        fontMap.put("Arial", "Arial");
+        fontMap.put("Times New Roman", "Times");
+        fontMap.put("Courier New", "Courier");
+        fontMap.put("Calibri", "Calibri");
+        fontMap.put("Verdana", "Verdana");
+        fontMap.put("Georgia", "Georgia");
+        fontMap.put("Comic Sans MS", "Comic");
+        fontMap.put("Impact", "Impact");
+        fontMap.put("Tahoma", "Tahoma");
+
+        // Process the font family name to match potential keys
+        String processedFontFamily = fontFamily.trim();
+// Try to find the font in our map
+        String fontFileName = null;
+        for (Map.Entry<String, String> entry : fontMap.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(processedFontFamily)) {
+                fontFileName = entry.getValue();
+                break;
+            }
+        }
+
+        // If we found a mapped font, construct the full path using the system directory
+        if (fontFileName != null) {
+            // Try common extensions for this platform
+            for (String ext : fontExtensions.values()) {
+                File fontFile = new File(fontDirectory, fontFileName + ext);
+                if (fontFile.exists()) {
+                    return fontFile.getAbsolutePath();
+                }
+            }
+        }
+
+        // If we couldn't find the font, try font discovery
+        String discoveredFont = discoverFont(processedFontFamily);
+        if (discoveredFont != null) {
+            return discoveredFont;
+        }
+
+        // Fall back to default
+        System.out.println("Warning: Font family '" + fontFamily + "' not found. Using default font as fallback.");
+        return defaultFontPath;
+    }
+//    Code by Raj
+//        // Try direct match
+//        if (fontMap.containsKey(processedFontFamily)) {
+//            System.out.println("Found exact font match for: " + processedFontFamily);
+//            return fontMap.get(processedFontFamily);
+//        }
+//
+//        // Try case-insensitive match
+//        for (Map.Entry<String, String> entry : fontMap.entrySet()) {
+//            if (entry.getKey().equalsIgnoreCase(processedFontFamily)) {
+//                System.out.println("Found case-insensitive font match for: " + processedFontFamily);
+//                return entry.getValue();
+//            }
+//        }
+
+        // If the specified font isn't in our map, you might want to try a more elaborate lookup
+        // For example, scanning the Windows fonts directory or using platform-specific APIs
+        // For now, we'll just log this and fallback to Arial
+//        System.out.println("Warning: Font family '" + fontFamily + "' not found in font map. Using Arial as fallback.");
+//        return defaultFontPath;
+
+    private String getSystemFontDirectory() {
+        String os = System.getProperty("os.name").toLowerCase();
+        if (os.contains("win")) {
+            return "C:/Windows/Fonts/";
+        } else if (os.contains("mac")) {
+            return "/Library/Fonts/";
+        } else if (os.contains("nix") || os.contains("nux") || os.contains("aix")) {
+            return "/usr/share/fonts/";
+        } else {
+            return "";
+        }
+    }
+
+    private Map<String, String> getPlatformFontExtensions() {
+        Map<String, String> extensions = new HashMap<>();
+        String os = System.getProperty("os.name").toLowerCase();
+        if (os.contains("win")) {
+            extensions.put("ttf", ".ttf");
+            extensions.put("otf", ".otf");
+        } else if (os.contains("mac")) {
+            extensions.put("ttf", ".ttf");
+            extensions.put("otf", ".otf");
+            extensions.put("dfont", ".dfont");
+        } else {
+            extensions.put("ttf", ".ttf");
+            extensions.put("otf", ".otf");
+        }
+        return extensions;
+    }
+
+    private String getSystemDefaultFontPath() {
+        String os = System.getProperty("os.name").toLowerCase();
+        if (os.contains("win")) {
+            return "C:/Windows/Fonts/Arial.ttf";
+        } else if (os.contains("mac")) {
+            return "/Library/Fonts/Helvetica.dfont";
+        } else {
+            return "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+        }
+    }
+
+    private String discoverFont(String fontName) {
+        // This is where you'd implement a more sophisticated font discovery mechanism
+        // For example, you could:
+        // 1. Use the Java GraphicsEnvironment to list available fonts
+        // 2. Use system-specific commands to list fonts
+        // 3. Use a font registry or database
+
+        // Simple implementation using GraphicsEnvironment
+        try {
+            GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+            Font[] fonts = ge.getAllFonts();
+            for (Font font : fonts) {
+                if (font.getFamily().equalsIgnoreCase(fontName)) {
+                    // This doesn't give us the file path, but we can use it to confirm the font exists
+                    System.out.println("Found font: " + fontName + " in system fonts");
+
+                    // We'd need additional logic here to map from font name to file path
+                    // This is platform-specific and might require JNI calls
+                    return lookupFontPath(font);
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Error discovering fonts: " + e.getMessage());
+        }
+
+        return null;
+    }
+
+    private String lookupFontPath(Font font) {
+        // This would need to be implemented with platform-specific code
+        // For professional apps, this often involves JNI (Java Native Interface) calls
+        // or system commands to get the actual file path
+
+        // Placeholder implementation
+        return null;
+    }
+
+
+
 }

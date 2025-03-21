@@ -58,6 +58,47 @@ public class ProjectController {
         Project project = videoEditingService.createProject(user, name, width, height);
         return ResponseEntity.ok(project);
     }
+    // In your controller class
+    @PutMapping("/{projectId}")
+    public ResponseEntity<Project> updateProject(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestBody Map<String, Object> request) throws JsonProcessingException {
+        User user = getUserFromToken(token);
+
+        String name = (String) request.get("name");
+        Integer width = request.get("width") != null ?
+                ((Number) request.get("width")).intValue() : null;
+        Integer height = request.get("height") != null ?
+                ((Number) request.get("height")).intValue() : null;
+
+        try {
+            Project updatedProject = videoEditingService.updateProject(projectId, user, name, width, height);
+            return ResponseEntity.ok(updatedProject);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+    }
+
+    @DeleteMapping("/{projectId}")
+    public ResponseEntity<?> deleteProject(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId) {
+        User user = getUserFromToken(token);
+
+        try {
+            videoEditingService.deleteProject(projectId, user);
+            return ResponseEntity.ok().build();
+        } catch (RuntimeException e) {
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+            } else if (e.getMessage().contains("Unauthorized")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(e.getMessage());
+            }
+        }
+    }
 
     @GetMapping
     public ResponseEntity<List<Project>> getUserProjects(
@@ -102,22 +143,6 @@ public class ProjectController {
         }
     }
 
-//    @GetMapping("/{projectId}/get-segment")
-//    public ResponseEntity<?> getVideoSegment(
-//            @RequestHeader("Authorization") String token,
-//            @PathVariable Long projectId,
-//            @RequestParam String sessionId,
-//            @RequestParam String segmentId) {
-//        try {
-//            User user = getUserFromToken(token);
-//
-//            VideoSegment segment = videoEditingService.getVideoSegment(sessionId, segmentId);
-//            return ResponseEntity.ok(segment);
-//        } catch (Exception e) {
-//            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-//                    .body("Error getting video segment: " + e.getMessage());
-//        }
-//    }
 
     @PostMapping("/{projectId}/save")
     public ResponseEntity<?> saveProject(
@@ -154,7 +179,7 @@ public class ProjectController {
             @RequestBody VideoController.SplitRequest request) {
         try {
             User user = getUserFromToken(token);
-            videoEditingService.splitVideo(sessionId, request.getVideoPath(), request.getSplitTimeSeconds(),request.getSegmentId());
+            videoEditingService.splitVideo(sessionId, request.getVideoPath(), request.getSplitTimeSeconds(), request.getSegmentId());
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -162,7 +187,45 @@ public class ProjectController {
         }
     }
 
+    @PutMapping("/{projectId}/split")
+    public ResponseEntity<?> updateSplitVideo(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
 
+            String segmentId = (String) request.get("segmentId");
+            double newSplitTime = Double.parseDouble(request.get("newSplitTime").toString());
+
+            videoEditingService.updateSplitVideo(sessionId, segmentId, newSplitTime);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating video split: " + e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/{projectId}/split")
+    public ResponseEntity<?> deleteSplitVideo(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String firstSegmentId = (String) request.get("firstSegmentId");
+            String secondSegmentId = (String) request.get("secondSegmentId");
+
+            videoEditingService.deleteSplitVideo(sessionId, firstSegmentId, secondSegmentId);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error deleting video split: " + e.getMessage());
+        }
+    }
 
     @GetMapping("/{projectId}")
     public ResponseEntity<Project> getProjectDetails(
@@ -174,6 +237,57 @@ public class ProjectController {
 
         return ResponseEntity.ok(project);
     }
+
+//    @PutMapping("/{projectId}/update-segment")
+//    public ResponseEntity<?> updateVideoSegment(
+//            @RequestHeader("Authorization") String token,
+//            @PathVariable Long projectId,
+//            @RequestParam String sessionId,
+//            @RequestParam String segmentId,
+//            @RequestBody Map<String, Object> request) {
+//        try {
+//            User user = getUserFromToken(token);
+//
+//            // Extract parameters from the request
+//            Integer positionX = request.get("positionX") != null ? ((Number) request.get("positionX")).intValue() : null;
+//            Integer positionY = request.get("positionY") != null ? ((Number) request.get("positionY")).intValue() : null;
+//            Double scale = request.get("scale") != null ? ((Number) request.get("scale")).doubleValue() : null;
+//
+//            // Call the service method to update the video segment
+//            videoEditingService.updateVideoSegment(
+//                    sessionId,
+//                    segmentId,
+//                    positionX,
+//                    positionY,
+//                    scale
+//            );
+//
+//            return ResponseEntity.ok().build();
+//        } catch (Exception e) {
+//            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+//                    .body("Error updating video segment: " + e.getMessage());
+//        }
+//    }
+
+    @DeleteMapping("/{projectId}/remove-segment")
+    public ResponseEntity<?> removeVideoSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestParam String segmentId) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Call the service method to remove the video segment
+            videoEditingService.removeVideoSegment(sessionId, segmentId);
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error removing video segment: " + e.getMessage());
+        }
+    }
+
 
     @PostMapping("/{projectId}/add-to-timeline")
     public ResponseEntity<?> addVideoToTimeline(
@@ -210,7 +324,71 @@ public class ProjectController {
                     .body("Error adding video to timeline: " + e.getMessage());
         }
     }
+    @DeleteMapping("/{projectId}/clear-timeline")
+    public ResponseEntity<?> clearTimeline(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId) {
+        try {
+            User user = getUserFromToken(token);
 
+            // Call the service method to clear the timeline
+            videoEditingService.clearTimeline(sessionId);
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error clearing timeline: " + e.getMessage());
+        }
+    }
+
+    @PutMapping("/{projectId}/update-segment-timing")
+    public ResponseEntity<?> updateSegmentTiming(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestParam String segmentId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Extract parameters from the request
+            Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : null;
+            Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : null;
+
+            // Call the service method to update the segment timing
+            videoEditingService.updateSegmentTiming(
+                    sessionId,
+                    segmentId,
+                    timelineStartTime,
+                    timelineEndTime,
+                    layer
+            );
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating segment timing: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/{projectId}/get-segment")
+    public ResponseEntity<?> getVideoSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestParam String segmentId) {
+        try {
+            User user = getUserFromToken(token);
+
+            VideoSegment segment = videoEditingService.getVideoSegment(sessionId, segmentId);
+            return ResponseEntity.ok(segment);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error getting video segment: " + e.getMessage());
+        }
+    }
 
     @PostMapping("/{projectId}/apply-filter")
     public ResponseEntity<?> applyFilter(
@@ -249,7 +427,105 @@ public class ProjectController {
                     .body("Error retrieving filter details: " + e.getMessage());
         }
     }
+    @PutMapping("/{projectId}/filter/{filterId}")
+    public ResponseEntity<?> updateFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String filterId,
+            @RequestParam String sessionId,
+            @RequestBody FilterRequest filterRequest) {
+        try {
+            User user = getUserFromToken(token);
 
+            // Find the segment information first
+            List<Map<String, Object>> filterDetails = videoEditingService.getFilterDetailsForSegment(sessionId,
+                    filterRequest.getSegmentId());
+
+            String segmentId = filterRequest.getSegmentId();
+            String videoPath = filterRequest.getVideoPath();
+
+            // Update the filter through the service
+            boolean filterUpdated = videoEditingService.updateFilter(
+                    sessionId,
+                    filterId,
+                    videoPath,
+                    segmentId,
+                    filterRequest.getFilterType(),
+                    filterRequest.getFilterParams()
+            );
+
+            if (filterUpdated) {
+                return ResponseEntity.ok().body(Map.of(
+                        "message", "Filter updated successfully",
+                        "filterId", filterId
+                ));
+            } else {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Filter not found with ID: " + filterId);
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating filter: " + e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/{projectId}/filter/{filterId}")
+    public ResponseEntity<?> deleteFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String filterId,
+            @RequestParam String sessionId) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Remove the filter through the service
+            boolean filterRemoved = videoEditingService.removeFilter(sessionId, filterId);
+
+            if (filterRemoved) {
+                return ResponseEntity.ok().body(Map.of(
+                        "message", "Filter removed successfully",
+                        "filterId", filterId
+                ));
+            } else {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Filter not found with ID: " + filterId);
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error deleting filter: " + e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/{projectId}/segment/{segmentId}/filters")
+    public ResponseEntity<?> deleteAllFiltersForSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String segmentId,
+            @RequestParam String sessionId) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Remove all filters for the segment through the service
+            Map<String, Object> result = videoEditingService.removeAllFiltersFromSegment(sessionId, segmentId);
+
+            boolean removed = (boolean) result.get("removed");
+            List<String> removedFilterIds = (List<String>) result.get("removedFilterIds");
+
+            if (removed && !removedFilterIds.isEmpty()) {
+                return ResponseEntity.ok().body(Map.of(
+                        "message", "All filters removed from segment",
+                        "segmentId", segmentId,
+                        "removedFilters", removedFilterIds
+                ));
+            } else {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("No filters found for segment: " + segmentId);
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error removing filters: " + e.getMessage());
+        }
+    }
 
     @PostMapping("/{projectId}/add-image")
     public ResponseEntity<?> addImageToTimeline(
@@ -492,4 +768,64 @@ public class ProjectController {
                     .body("Error applying image filter: " + e.getMessage());
         }
     }
+
+
+    @PostMapping("/{projectId}/add-text")
+    public ResponseEntity<?> addTextToTimeline(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String text = (String) request.get("text");
+            int layer = (int) request.get("layer");
+            double timelineStartTime = (double) request.get("timelineStartTime");
+            double timelineEndTime = (double) request.get("timelineEndTime");
+            String fontFamily = (String) request.get("fontFamily");
+            int fontSize = (int) request.get("fontSize");
+            String fontColor = (String) request.get("fontColor");
+            String backgroundColor = (String) request.get("backgroundColor");
+            int positionX = (int) request.get("positionX");
+            int positionY = (int) request.get("positionY");
+
+            videoEditingService.addTextToTimeline(sessionId, text, layer, timelineStartTime, timelineEndTime,
+                    fontFamily, fontSize, fontColor, backgroundColor, positionX, positionY);
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error adding text to timeline: " + e.getMessage());
+        }
+    }
+
+    @PutMapping("/{projectId}/update-text")
+    public ResponseEntity<?> updateTextSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String segmentId = (String) request.get("segmentId");
+            String text = (String) request.get("text");
+            String fontFamily = (String) request.get("fontFamily");
+            Integer fontSize = (Integer) request.get("fontSize");
+            String fontColor = (String) request.get("fontColor");
+            String backgroundColor = (String) request.get("backgroundColor");
+            Integer positionX = (Integer) request.get("positionX");
+            Integer positionY = (Integer) request.get("positionY");
+
+            videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, fontSize,
+                    fontColor, backgroundColor, positionX, positionY);
+
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating text segment: " + e.getMessage());
+        }
+    }
+
 }

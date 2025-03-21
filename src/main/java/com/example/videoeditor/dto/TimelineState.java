@@ -14,8 +14,17 @@ public class TimelineState {
     private List<EditOperation> operations;
     private Map<String, Object> metadata;
     private List<ImageSegment> imageSegments = new ArrayList<>();
+    private List<AudioSegment> audioSegments = new ArrayList<>();
 
-//FOR IMAGE .............................................................................
+    public List<AudioSegment> getAudioSegments() {
+        return audioSegments;
+    }
+
+    public void setAudioSegments(List<AudioSegment> audioSegments) {
+        this.audioSegments = audioSegments;
+    }
+
+    //FOR IMAGE .............................................................................
     public List<ImageSegment> getImageSegments() {
         return imageSegments;
     }
