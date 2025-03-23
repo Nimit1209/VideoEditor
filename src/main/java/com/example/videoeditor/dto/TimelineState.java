@@ -11,7 +11,6 @@ import java.util.Map;
 public class TimelineState {
     private List<VideoSegment> segments;
     private List<TextSegment> textSegments;
-    private List<EditOperation> operations;
     private Map<String, Object> metadata;
     private List<ImageSegment> imageSegments = new ArrayList<>();
     private List<AudioSegment> audioSegments = new ArrayList<>();
@@ -32,14 +31,13 @@ public class TimelineState {
     public void setImageSegments(List<ImageSegment> imageSegments) {
         this.imageSegments = imageSegments;
     }
-//................................................................................
+    //................................................................................
     // Assuming this is in a file like TimelineState.java
     private Integer canvasWidth;
     private Integer canvasHeight;
 
     public TimelineState() {
         this.segments = new ArrayList<>();
-        this.operations = new ArrayList<>();
         this.metadata = new HashMap<>();
         this.textSegments = new ArrayList<>();
     }
@@ -82,18 +80,6 @@ public class TimelineState {
     public void setSegments(List<VideoSegment> segments) {
         this.segments = segments;
     }
-
-    public List<EditOperation> getOperations() {
-        if (operations == null) {
-            operations = new ArrayList<>();
-        }
-        return operations;
-    }
-
-    public void setOperations(List<EditOperation> operations) {
-        this.operations = operations;
-    }
-
     public Map<String, Object> getMetadata() {
         return metadata;
     }

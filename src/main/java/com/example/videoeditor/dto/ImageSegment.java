@@ -193,4 +193,3 @@ public class ImageSegment {
         this.height = height;
     }
 }
-

@@ -2,6 +2,8 @@ package com.example.videoeditor.dto;
 
 import lombok.Data;
 
+import java.util.LinkedHashMap; // CHANGED: Using LinkedHashMap for order preservation
+import java.util.Map;
 import java.util.UUID;
 
 @Data
@@ -18,6 +20,14 @@ public class VideoSegment {
     private Integer layer = 0;     // Layer of the segment (for multi-level timelines)
     private double timelineStartTime; // Start time of the segment in the timeline (in seconds)
     private double timelineEndTime;   // End time of the segment in the timeline (in seconds)
+
+    // CHANGED: Changed HashMap to LinkedHashMap to preserve filter application order
+    private Map<String, Map<String, Object>> filters;
+
+    public VideoSegment() {
+        this.id = UUID.randomUUID().toString(); // Generate unique ID on creation
+        this.filters = new LinkedHashMap<>(); // CHANGED: Initialized as LinkedHashMap
+    }
 
     public Integer getLayer() {
         return layer;
@@ -67,10 +77,6 @@ public class VideoSegment {
         this.scale = scale;
     }
 
-    public VideoSegment() {
-        this.id = UUID.randomUUID().toString(); // Generate unique ID on creation
-    }
-
     public String getSourceVideoPath() {
         return sourceVideoPath;
     }
@@ -101,5 +107,14 @@ public class VideoSegment {
 
     public void setId(String id) {
         this.id = id;
+    }
+
+    // Getter and setter already present, no change needed
+    public Map<String, Map<String, Object>> getFilters() {
+        return filters;
+    }
+
+    public void setFilters(Map<String, Map<String, Object>> filters) {
+        this.filters = filters;
     }
 }

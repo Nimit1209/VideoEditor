@@ -135,7 +135,13 @@ public class ProjectController {
             Double scale = request.containsKey("scale") ?
                     Double.valueOf(request.get("scale").toString()) : null;
 
-            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale);
+            // Add new parameters
+            Double timelineStartTime = request.containsKey("timelineStartTime") ?
+                    Double.valueOf(request.get("timelineStartTime").toString()) : null;
+            Integer layer = request.containsKey("layer") ?
+                    Integer.valueOf(request.get("layer").toString()) : null;
+
+            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale, timelineStartTime, layer);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -389,7 +395,7 @@ public class ProjectController {
                     .body("Error getting video segment: " + e.getMessage());
         }
     }
-
+    // Apply a new filter to a video segment (stacking capability)
     @PostMapping("/{projectId}/apply-filter")
     public ResponseEntity<?> applyFilter(
             @RequestHeader("Authorization") String token,
@@ -398,20 +404,30 @@ public class ProjectController {
             @RequestBody FilterRequest filterRequest) {
         try {
             User user = getUserFromToken(token);
+
+            // Validate required parameters
+            if (filterRequest.getSegmentId() == null || filterRequest.getFilterType() == null) {
+                return ResponseEntity.badRequest()
+                        .body("Missing required parameters: segmentId and filterType are required");
+            }
+
+            // Apply the filter (this stacks a new filter on top of existing ones)
             videoEditingService.applyFilter(
                     sessionId,
-                    filterRequest.getVideoPath(),
                     filterRequest.getSegmentId(),
                     filterRequest.getFilterType(),
                     filterRequest.getFilterParams()
             );
-            return ResponseEntity.ok().build();
+
+            return ResponseEntity.ok()
+                    .body(Map.of("message", "Filter applied successfully"));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error applying filter: " + e.getMessage());
         }
     }
 
+    // Get filter details for a specific segment
     @GetMapping("/{projectId}/segment/{segmentId}/filters")
     public ResponseEntity<?> getFilterDetailsForSegment(
             @RequestHeader("Authorization") String token,
@@ -427,6 +443,8 @@ public class ProjectController {
                     .body("Error retrieving filter details: " + e.getMessage());
         }
     }
+
+    // Update an existing filter
     @PutMapping("/{projectId}/filter/{filterId}")
     public ResponseEntity<?> updateFilter(
             @RequestHeader("Authorization") String token,
@@ -437,28 +455,27 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
-            // Find the segment information first
-            List<Map<String, Object>> filterDetails = videoEditingService.getFilterDetailsForSegment(sessionId,
-                    filterRequest.getSegmentId());
+            // Validate required parameters
+            if (filterRequest.getSegmentId() == null || filterRequest.getFilterType() == null) {
+                return ResponseEntity.badRequest()
+                        .body("Missing required parameters: segmentId and filterType are required");
+            }
 
-            String segmentId = filterRequest.getSegmentId();
-            String videoPath = filterRequest.getVideoPath();
-
-            // Update the filter through the service
+            // Update the existing filter
             boolean filterUpdated = videoEditingService.updateFilter(
                     sessionId,
                     filterId,
-                    videoPath,
-                    segmentId,
+                    filterRequest.getSegmentId(),
                     filterRequest.getFilterType(),
                     filterRequest.getFilterParams()
             );
 
             if (filterUpdated) {
-                return ResponseEntity.ok().body(Map.of(
-                        "message", "Filter updated successfully",
-                        "filterId", filterId
-                ));
+                return ResponseEntity.ok()
+                        .body(Map.of(
+                                "message", "Filter updated successfully",
+                                "filterId", filterId
+                        ));
             } else {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                         .body("Filter not found with ID: " + filterId);
@@ -469,6 +486,7 @@ public class ProjectController {
         }
     }
 
+    // Delete a specific filter
     @DeleteMapping("/{projectId}/filter/{filterId}")
     public ResponseEntity<?> deleteFilter(
             @RequestHeader("Authorization") String token,
@@ -478,14 +496,15 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
-            // Remove the filter through the service
+            // Remove the specific filter
             boolean filterRemoved = videoEditingService.removeFilter(sessionId, filterId);
 
             if (filterRemoved) {
-                return ResponseEntity.ok().body(Map.of(
-                        "message", "Filter removed successfully",
-                        "filterId", filterId
-                ));
+                return ResponseEntity.ok()
+                        .body(Map.of(
+                                "message", "Filter removed successfully",
+                                "filterId", filterId
+                        ));
             } else {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                         .body("Filter not found with ID: " + filterId);
@@ -496,6 +515,7 @@ public class ProjectController {
         }
     }
 
+    // Delete all filters for a specific segment
     @DeleteMapping("/{projectId}/segment/{segmentId}/filters")
     public ResponseEntity<?> deleteAllFiltersForSegment(
             @RequestHeader("Authorization") String token,
@@ -505,18 +525,19 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
-            // Remove all filters for the segment through the service
+            // Remove all filters for the segment
             Map<String, Object> result = videoEditingService.removeAllFiltersFromSegment(sessionId, segmentId);
 
             boolean removed = (boolean) result.get("removed");
             List<String> removedFilterIds = (List<String>) result.get("removedFilterIds");
 
             if (removed && !removedFilterIds.isEmpty()) {
-                return ResponseEntity.ok().body(Map.of(
-                        "message", "All filters removed from segment",
-                        "segmentId", segmentId,
-                        "removedFilters", removedFilterIds
-                ));
+                return ResponseEntity.ok()
+                        .body(Map.of(
+                                "message", "All filters removed from segment",
+                                "segmentId", segmentId,
+                                "removedFilters", removedFilterIds
+                        ));
             } else {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                         .body("No filters found for segment: " + segmentId);
@@ -526,7 +547,6 @@ public class ProjectController {
                     .body("Error removing filters: " + e.getMessage());
         }
     }
-
     @PostMapping("/{projectId}/add-image")
     public ResponseEntity<?> addImageToTimeline(
             @RequestHeader("Authorization") String token,
@@ -534,35 +554,23 @@ public class ProjectController {
             @RequestParam String sessionId,
             @RequestBody Map<String, Object> request) {
         try {
-            // Retrieve user from token (if needed)
             User user = getUserFromToken(token);
 
             // Extract parameters
             String imagePath = (String) request.get("imagePath");
-            Integer layer = request.get("layer") != null ?
-                    ((Number) request.get("layer")).intValue() : 0;
-            Double timelineStartTime = request.get("timelineStartTime") != null ?
-                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
-            Double timelineEndTime = request.get("timelineEndTime") != null ?
-                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
-            Integer positionX = request.get("positionX") != null ?
-                    ((Number) request.get("positionX")).intValue() : 0;
-            Integer positionY = request.get("positionY") != null ?
-                    ((Number) request.get("positionY")).intValue() : 0;
-            Double scale = request.get("scale") != null ?
-                    ((Number) request.get("scale")).doubleValue() : 1.0;
+            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : 0;
+            Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
+            Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            Integer positionX = request.get("positionX") != null ? ((Number) request.get("positionX")).intValue() : 0;
+            Integer positionY = request.get("positionY") != null ? ((Number) request.get("positionY")).intValue() : 0;
+            Double scale = request.get("scale") != null ? ((Number) request.get("scale")).doubleValue() : 1.0;
 
-            // New parameters for filters and custom dimensions
-            Integer customWidth = request.get("customWidth") != null ?
-                    ((Number) request.get("customWidth")).intValue() : null;
-            Integer customHeight = request.get("customHeight") != null ?
-                    ((Number) request.get("customHeight")).intValue() : null;
-            Boolean maintainAspectRatio = request.get("maintainAspectRatio") != null ?
-                    (Boolean) request.get("maintainAspectRatio") : null;
+            Integer customWidth = request.get("customWidth") != null ? ((Number) request.get("customWidth")).intValue() : null;
+            Integer customHeight = request.get("customHeight") != null ? ((Number) request.get("customHeight")).intValue() : null;
+            Boolean maintainAspectRatio = request.get("maintainAspectRatio") != null ? (Boolean) request.get("maintainAspectRatio") : null;
 
             @SuppressWarnings("unchecked")
-            Map<String, String> filters = request.get("filters") != null ?
-                    (Map<String, String>) request.get("filters") : null;
+            Map<String, String> filters = request.get("filters") != null ? (Map<String, String>) request.get("filters") : null;
 
             // Validate required parameters
             if (imagePath == null) {
@@ -609,13 +617,10 @@ public class ProjectController {
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
-            // Return a structured error response
             Map<String, String> errorResponse = new HashMap<>();
             errorResponse.put("error", "Error adding image to timeline");
             errorResponse.put("message", e.getMessage());
-
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(errorResponse);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
         }
     }
 
@@ -746,20 +751,20 @@ public class ProjectController {
             }
 
             // Create an operation for tracking
-            EditOperation filterOperation = new EditOperation();
-            filterOperation.setOperationType("APPLY_IMAGE_FILTER");
-            filterOperation.setSourceVideoPath(targetSegment.getImagePath());
+//            EditOperation filterOperation = new EditOperation();
+//            filterOperation.setOperationType("APPLY_IMAGE_FILTER");
+//            filterOperation.setSourceVideoPath(targetSegment.getImagePath());
 
             Map<String, Object> params = new HashMap<>();
             params.put("imageSegmentId", segmentId);
             params.put("time", System.currentTimeMillis());
             params.put("filterType", filterType);
             params.put("filterValue", filterValue);
-            filterOperation.setParameters(params);
+//            filterOperation.setParameters(params);
 
-            timelineState.getOperations().add(filterOperation);
-
-            // Save the updated timeline state
+//            timelineState.add(filterOperation);
+//
+// Save the updated timeline state
             videoEditingService.saveTimelineState(sessionId, timelineState);
 
             return ResponseEntity.ok().build();
@@ -812,14 +817,23 @@ public class ProjectController {
             String segmentId = (String) request.get("segmentId");
             String text = (String) request.get("text");
             String fontFamily = (String) request.get("fontFamily");
-            Integer fontSize = (Integer) request.get("fontSize");
+            Integer fontSize = request.containsKey("fontSize") ?
+                    Integer.valueOf(request.get("fontSize").toString()) : null;
             String fontColor = (String) request.get("fontColor");
             String backgroundColor = (String) request.get("backgroundColor");
-            Integer positionX = (Integer) request.get("positionX");
-            Integer positionY = (Integer) request.get("positionY");
+            Integer positionX = request.containsKey("positionX") ?
+                    Integer.valueOf(request.get("positionX").toString()) : null;
+            Integer positionY = request.containsKey("positionY") ?
+                    Integer.valueOf(request.get("positionY").toString()) : null;
+            Double timelineStartTime = request.containsKey("timelineStartTime") ?
+                    Double.valueOf(request.get("timelineStartTime").toString()) : null;
+            Double timelineEndTime = request.containsKey("timelineEndTime") ?
+                    Double.valueOf(request.get("timelineEndTime").toString()) : null;
+            Integer layer = request.containsKey("layer") ?
+                    Integer.valueOf(request.get("layer").toString()) : null;
 
             videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, fontSize,
-                    fontColor, backgroundColor, positionX, positionY);
+                    fontColor, backgroundColor, positionX, positionY, timelineStartTime, timelineEndTime, layer);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
