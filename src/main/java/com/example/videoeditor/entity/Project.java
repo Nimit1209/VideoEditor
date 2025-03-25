@@ -1,8 +1,15 @@
 package com.example.videoeditor.entity;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import lombok.Data;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Entity
 @Table(name = "projects")
@@ -32,6 +39,50 @@ public class Project {
     private Integer height;
 
     private String exportedVideoPath;
+
+    // Change from single image to list of images
+    @Column(columnDefinition = "TEXT")
+    private String imagesJson; // Stores a JSON array of image data
+
+    // Getters and setters
+    public List<Map<String, String>> getImages() throws JsonProcessingException {
+        if (imagesJson == null || imagesJson.isEmpty()) {
+            return new ArrayList<>();
+        }
+        ObjectMapper mapper = new ObjectMapper();
+        return mapper.readValue(imagesJson, new TypeReference<List<Map<String, String>>>() {});
+    }
+
+    public void addImage(String imagePath, String imageFileName) throws JsonProcessingException {
+        List<Map<String, String>> images = getImages();
+        Map<String, String> imageData = new HashMap<>();
+        imageData.put("imagePath", imagePath);
+        imageData.put("imageFileName", imageFileName);
+        images.add(imageData);
+        ObjectMapper mapper = new ObjectMapper();
+        this.imagesJson = mapper.writeValueAsString(images);
+    }
+
+    @Column(columnDefinition = "TEXT")
+    private String audioJson; // Stores a JSON array of audio data
+
+    public List<Map<String, String>> getAudio() throws JsonProcessingException {
+        if (audioJson == null || audioJson.isEmpty()) {
+            return new ArrayList<>();
+        }
+        ObjectMapper mapper = new ObjectMapper();
+        return mapper.readValue(audioJson, new TypeReference<List<Map<String, String>>>() {});
+    }
+
+    public void addAudio(String audioPath, String audioFileName) throws JsonProcessingException {
+        List<Map<String, String>> audioFiles = getAudio();
+        Map<String, String> audioData = new HashMap<>();
+        audioData.put("audioPath", audioPath);
+        audioData.put("audioFileName", audioFileName);
+        audioFiles.add(audioData);
+        ObjectMapper mapper = new ObjectMapper();
+        this.audioJson = mapper.writeValueAsString(audioFiles);
+    }
 
     public String getExportedVideoPath() {
         return exportedVideoPath;
@@ -104,4 +155,5 @@ public class Project {
     public void setTimelineState(String timelineState) {
         this.timelineState = timelineState;
     }
+
 }

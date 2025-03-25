@@ -13,15 +13,22 @@ public class TimelineState {
     private List<TextSegment> textSegments;
     private Map<String, Object> metadata;
     private List<ImageSegment> imageSegments = new ArrayList<>();
+
     private List<AudioSegment> audioSegments = new ArrayList<>();
 
     public List<AudioSegment> getAudioSegments() {
+        if (audioSegments == null) {
+            audioSegments = new ArrayList<>();
+        }
         return audioSegments;
     }
 
     public void setAudioSegments(List<AudioSegment> audioSegments) {
         this.audioSegments = audioSegments;
     }
+
+
+
 
     //FOR IMAGE .............................................................................
     public List<ImageSegment> getImageSegments() {
@@ -117,6 +124,15 @@ public class TimelineState {
                 // Check for overlap
                 if (timelineStartTime < segment.getTimelineEndTime() && timelineEndTime > segment.getTimelineStartTime()) {
                     return false; // Overlap detected
+                }
+            }
+        }
+        // Check audio segments (negative layers)
+        for (AudioSegment segment : audioSegments) {
+            if (segment.getLayer() == layer && layer < 0) {
+                if (timelineStartTime < segment.getTimelineEndTime() &&
+                        timelineEndTime > segment.getTimelineStartTime()) {
+                    return false;
                 }
             }
         }

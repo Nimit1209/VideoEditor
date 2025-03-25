@@ -1,19 +1,18 @@
 package com.example.videoeditor.dto;
 
-import java.util.HashMap;
-import java.util.Map;
+import lombok.Data;
+import java.util.UUID;
 
+@Data
 public class AudioSegment {
-    private String id;
+    private String id = UUID.randomUUID().toString();
     private String audioPath;
-    private int layer;
-    private double timelineStartTime;
-    private double timelineEndTime;
-    private double startTime; // Starting point in the original audio file
-    private double volume = 1.0; // Default volume (0.0 to 1.0)
-    private Map<String, Object> filters = new HashMap<>(); // Initialize the filters map
-
-    // Getters and setters
+    private int layer; // Will be negative (-1, -2, -3, etc.)
+    private double startTime; // Start time within the audio file
+    private double endTime;   // End time within the audio file
+    private double timelineStartTime; // Position in timeline
+    private double timelineEndTime;   // End position in timeline
+    private double volume = 1.0; // Volume level (0.0 to 1.0)
 
     public String getId() {
         return id;
@@ -39,6 +38,22 @@ public class AudioSegment {
         this.layer = layer;
     }
 
+    public double getStartTime() {
+        return startTime;
+    }
+
+    public void setStartTime(double startTime) {
+        this.startTime = startTime;
+    }
+
+    public double getEndTime() {
+        return endTime;
+    }
+
+    public void setEndTime(double endTime) {
+        this.endTime = endTime;
+    }
+
     public double getTimelineStartTime() {
         return timelineStartTime;
     }
@@ -55,42 +70,11 @@ public class AudioSegment {
         this.timelineEndTime = timelineEndTime;
     }
 
-    public double getStartTime() {
-        return startTime;
-    }
-
-    public void setStartTime(double startTime) {
-        this.startTime = startTime;
-    }
-
     public double getVolume() {
         return volume;
     }
 
     public void setVolume(double volume) {
         this.volume = volume;
-    }
-
-    public Map<String, Object> getFilters() {
-        return filters;
-    }
-
-    public void setFilters(Map<String, Object> filters) {
-        this.filters = filters;
-    }
-
-    // Add a filter to the filters map
-    public void addFilter(String key, Object value) {
-        if (filters == null) {
-            filters = new HashMap<>();
-        }
-        filters.put(key, value);
-    }
-
-    // Remove a filter from the filters map
-    public void removeFilter(String key) {
-        if (filters != null) {
-            filters.remove(key);
-        }
     }
 }

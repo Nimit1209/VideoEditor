@@ -11,6 +11,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.IOException;
@@ -547,161 +548,7 @@ public class ProjectController {
                     .body("Error removing filters: " + e.getMessage());
         }
     }
-    @PostMapping("/{projectId}/add-image")
-    public ResponseEntity<?> addImageToTimeline(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestBody Map<String, Object> request) {
-        try {
-            User user = getUserFromToken(token);
 
-            // Extract parameters
-            String imagePath = (String) request.get("imagePath");
-            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : 0;
-            Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
-            Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
-            Integer positionX = request.get("positionX") != null ? ((Number) request.get("positionX")).intValue() : 0;
-            Integer positionY = request.get("positionY") != null ? ((Number) request.get("positionY")).intValue() : 0;
-            Double scale = request.get("scale") != null ? ((Number) request.get("scale")).doubleValue() : 1.0;
-
-            Integer customWidth = request.get("customWidth") != null ? ((Number) request.get("customWidth")).intValue() : null;
-            Integer customHeight = request.get("customHeight") != null ? ((Number) request.get("customHeight")).intValue() : null;
-            Boolean maintainAspectRatio = request.get("maintainAspectRatio") != null ? (Boolean) request.get("maintainAspectRatio") : null;
-
-            @SuppressWarnings("unchecked")
-            Map<String, String> filters = request.get("filters") != null ? (Map<String, String>) request.get("filters") : null;
-
-            // Validate required parameters
-            if (imagePath == null) {
-                return ResponseEntity.badRequest().body("Missing required parameter: imagePath");
-            }
-
-            // Validate parameter ranges
-            if (layer < 0) {
-                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
-            }
-            if (timelineStartTime < 0) {
-                return ResponseEntity.badRequest().body("Timeline start time must be a non-negative value");
-            }
-            if (timelineEndTime != null && timelineEndTime <= timelineStartTime) {
-                return ResponseEntity.badRequest().body("Timeline end time must be greater than start time");
-            }
-            if (scale <= 0) {
-                return ResponseEntity.badRequest().body("Scale must be a positive value");
-            }
-
-            // Validate custom dimensions
-            if (customWidth != null && customWidth <= 0) {
-                return ResponseEntity.badRequest().body("Custom width must be a positive value");
-            }
-            if (customHeight != null && customHeight <= 0) {
-                return ResponseEntity.badRequest().body("Custom height must be a positive value");
-            }
-
-            // Call service method
-            videoEditingService.addImageToTimeline(
-                    sessionId,
-                    imagePath,
-                    layer,
-                    timelineStartTime,
-                    timelineEndTime,
-                    positionX,
-                    positionY,
-                    scale,
-                    customWidth,
-                    customHeight,
-                    maintainAspectRatio,
-                    filters
-            );
-
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            Map<String, String> errorResponse = new HashMap<>();
-            errorResponse.put("error", "Error adding image to timeline");
-            errorResponse.put("message", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-        }
-    }
-
-    @PutMapping("/{projectId}/update-image")
-    public ResponseEntity<?> updateImageSegment(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestBody Map<String, Object> request) {
-        try {
-            User user = getUserFromToken(token);
-
-            // Extract parameters
-            String segmentId = (String) request.get("segmentId");
-            Integer positionX = request.containsKey("positionX") ?
-                    Integer.valueOf(request.get("positionX").toString()) : null;
-            Integer positionY = request.containsKey("positionY") ?
-                    Integer.valueOf(request.get("positionY").toString()) : null;
-            Double scale = request.containsKey("scale") ?
-                    Double.valueOf(request.get("scale").toString()) : null;
-            Double opacity = request.containsKey("opacity") ?
-                    Double.valueOf(request.get("opacity").toString()) : null;
-            Integer layer = request.containsKey("layer") ?
-                    Integer.valueOf(request.get("layer").toString()) : null;
-
-            // New parameters for image customization
-            Integer customWidth = request.containsKey("customWidth") ?
-                    Integer.valueOf(request.get("customWidth").toString()) : null;
-            Integer customHeight = request.containsKey("customHeight") ?
-                    Integer.valueOf(request.get("customHeight").toString()) : null;
-            Boolean maintainAspectRatio = request.containsKey("maintainAspectRatio") ?
-                    Boolean.valueOf(request.get("maintainAspectRatio").toString()) : null;
-
-            // Filter management
-            @SuppressWarnings("unchecked")
-            Map<String, String> filters = request.containsKey("filters") ?
-                    (Map<String, String>) request.get("filters") : null;
-
-            @SuppressWarnings("unchecked")
-            List<String> filtersToRemove = request.containsKey("filtersToRemove") ?
-                    (List<String>) request.get("filtersToRemove") : null;
-
-            // Validate parameters
-            if (segmentId == null) {
-                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
-            }
-
-            // Validate custom dimensions if provided
-            if (customWidth != null && customWidth <= 0) {
-                return ResponseEntity.badRequest().body("Custom width must be a positive value");
-            }
-            if (customHeight != null && customHeight <= 0) {
-                return ResponseEntity.badRequest().body("Custom height must be a positive value");
-            }
-
-            // Validate opacity
-            if (opacity != null && (opacity < 0 || opacity > 1)) {
-                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
-            }
-
-            // Call service method
-            videoEditingService.updateImageSegment(
-                    sessionId,
-                    segmentId,
-                    positionX,
-                    positionY,
-                    scale,
-                    opacity,
-                    layer,
-                    customWidth,
-                    customHeight,
-                    maintainAspectRatio,
-                    filters,
-                    filtersToRemove
-            );
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error updating image segment: " + e.getMessage());
-        }
-    }
 
     // Add a new endpoint specifically for applying filters
     @PutMapping("/{projectId}/apply-image-filter")
@@ -842,4 +689,170 @@ public class ProjectController {
         }
     }
 
+    // Add this endpoint to ProjectController
+    @PostMapping("/{projectId}/upload-image")
+    public ResponseEntity<?> uploadImage(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam("image") MultipartFile imageFile,
+            @RequestParam("imageFileName") String imageFileName) {
+        try {
+            User user = getUserFromToken(token);
+            Project updatedProject = videoEditingService.uploadImageToProject(user, projectId, imageFile, imageFileName);
+            return ResponseEntity.ok(updatedProject);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error uploading image: " + e.getMessage());
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(e.getMessage());
+        }
+    }
+    @PostMapping("/{projectId}/add-project-image-to-timeline")
+    public ResponseEntity<?> addProjectImageToTimeline(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : 0;
+            Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
+            @SuppressWarnings("unchecked")
+            Map<String, String> filters = request.get("filters") != null ? (Map<String, String>) request.get("filters") : null;
+            String imageFileName = (String) request.get("imageFileName"); // Change from imageIndex to imageFileName
+
+            if (layer < 0) {
+                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
+            }
+            if (timelineStartTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline start time must be a non-negative value");
+            }
+            if (imageFileName == null || imageFileName.isEmpty()) {
+                return ResponseEntity.badRequest().body("Image filename is required");
+            }
+
+            videoEditingService.addImageToTimelineFromProject(user, sessionId, projectId, layer, timelineStartTime, filters, imageFileName);
+            return ResponseEntity.ok().build();
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error adding project image to timeline: " + e.getMessage());
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(e.getMessage());
+        }
+    }
+
+    @PutMapping("/{projectId}/update-image")
+    public ResponseEntity<?> updateImageSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+            String segmentId = (String) request.get("segmentId");
+            Integer positionX = request.containsKey("positionX") ?
+                    Integer.valueOf(request.get("positionX").toString()) : null;
+            Integer positionY = request.containsKey("positionY") ?
+                    Integer.valueOf(request.get("positionY").toString()) : null;
+            Double scale = request.containsKey("scale") ?
+                    Double.valueOf(request.get("scale").toString()) : null;
+            Double opacity = request.containsKey("opacity") ?
+                    Double.valueOf(request.get("opacity").toString()) : null;
+            Integer layer = request.containsKey("layer") ?
+                    Integer.valueOf(request.get("layer").toString()) : null;
+            Integer customWidth = request.containsKey("customWidth") ?
+                    Integer.valueOf(request.get("customWidth").toString()) : null;
+            Integer customHeight = request.containsKey("customHeight") ?
+                    Integer.valueOf(request.get("customHeight").toString()) : null;
+            Boolean maintainAspectRatio = request.containsKey("maintainAspectRatio") ?
+                    Boolean.valueOf(request.get("maintainAspectRatio").toString()) : null;
+            @SuppressWarnings("unchecked")
+            Map<String, String> filters = request.containsKey("filters") ?
+                    (Map<String, String>) request.get("filters") : null;
+            @SuppressWarnings("unchecked")
+            List<String> filtersToRemove = request.containsKey("filtersToRemove") ?
+                    (List<String>) request.get("filtersToRemove") : null;
+
+            if (segmentId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+            if (customWidth != null && customWidth <= 0) {
+                return ResponseEntity.badRequest().body("Custom width must be a positive value");
+            }
+            if (customHeight != null && customHeight <= 0) {
+                return ResponseEntity.badRequest().body("Custom height must be a positive value");
+            }
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
+            }
+
+            videoEditingService.updateImageSegment(
+                    sessionId, segmentId, positionX, positionY, scale, opacity, layer,
+                    customWidth, customHeight, maintainAspectRatio, filters, filtersToRemove);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating image segment: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/{projectId}/upload-audio")
+    public ResponseEntity<?> uploadAudio(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam("audio") MultipartFile audioFile,
+            @RequestParam("audioFileName") String audioFileName) {
+        try {
+            User user = getUserFromToken(token);
+            Project updatedProject = videoEditingService.uploadAudioToProject(user, projectId, audioFile, audioFileName);
+            return ResponseEntity.ok(updatedProject);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error uploading audio: " + e.getMessage());
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/{projectId}/add-project-audio-to-timeline")
+    public ResponseEntity<?> addProjectAudioToTimeline(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : -1;
+            Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : 0.0;
+            Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
+            Double timelineStartTime = request.get("timelineStartTime") != null ?
+                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
+            Double timelineEndTime = request.get("timelineEndTime") != null ?
+                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            String audioFileName = (String) request.get("audioFileName");
+
+            if (layer >= 0) {
+                return ResponseEntity.badRequest().body("Audio layer must be negative");
+            }
+            if (startTime < 0) {
+                return ResponseEntity.badRequest().body("Start time must be non-negative");
+            }
+            if (timelineStartTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline start time must be non-negative");
+            }
+            if (audioFileName == null || audioFileName.isEmpty()) {
+                return ResponseEntity.badRequest().body("Audio filename is required");
+            }
+
+            videoEditingService.addAudioToTimelineFromProject(
+                    user, sessionId, projectId, layer, startTime, endTime, timelineStartTime, timelineEndTime, audioFileName);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error adding audio to timeline: " + e.getMessage());
+        }
+    }
 }
