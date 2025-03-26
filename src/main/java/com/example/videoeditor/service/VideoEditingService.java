@@ -425,6 +425,10 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
+    // Utility method to build media paths
+    private String buildMediaPath(String mediaType, String userId, Long projectId, String fileName) {
+        return String.format("%s/%s/projects/%d/%s", mediaType, userId, projectId, fileName);
+    }
 
 //    VIDEO FUNCTIONALITY.........................................................................................
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
@@ -471,7 +475,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectVideoDir = new File(baseDir, "videos" + File.separator + "projects" + File.separator + projectId);
+        String userId = user.getId().toString();
+        File projectVideoDir = new File(baseDir, "videos" + File.separator + userId + File.separator + "projects" + File.separator + projectId);
 
         if (!projectVideoDir.exists()) {
             boolean dirsCreated = projectVideoDir.mkdirs();
@@ -485,9 +490,9 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
         videoFile.transferTo(destinationFile);
 
-        String relativePath = "videos/projects/" + projectId + "/" + uniqueFileName;
+        String relativePath = buildMediaPath("videos", userId, projectId, uniqueFileName);
         try {
-            addVideo(project, relativePath, videoFileName); // Use service method instead of entity method
+            addVideo(project, relativePath, videoFileName);
         } catch (JsonProcessingException e) {
             throw new IOException("Failed to process video data", e);
         }
@@ -558,7 +563,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
         List<Map<String, String>> videos;
         try {
-            videos = getVideos(project); // Use service method
+            videos = getVideos(project);
             System.out.println("Available videos in project " + projectId + ": " + videos);
         } catch (JsonProcessingException e) {
             throw new IOException("Failed to parse project videos", e);
@@ -1002,7 +1007,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         int videoInputCount = 0;
         Map<Integer, VideoSegment> videoInputMap = new HashMap<>();
         for (VideoSegment segment : visibleSegments) {
-            String videoPath = "videos/" + segment.getSourceVideoPath();
+            String videoPath = new File(baseDir, segment.getSourceVideoPath()).getAbsolutePath(); // Use absolute path
             if (new File(videoPath).exists()) {
                 command.add("-i");
                 command.add(videoPath);
@@ -1014,7 +1019,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         int imageInputCount = 0;
         Map<Integer, ImageSegment> imageInputMap = new HashMap<>();
         for (ImageSegment imgSegment : visibleImages) {
-            String imagePath = "images/" + imgSegment.getImagePath();
+            String imagePath = new File(baseDir, imgSegment.getImagePath()).getAbsolutePath(); // Use absolute path
             if (new File(imagePath).exists()) {
                 command.add("-i");
                 command.add(imagePath);
@@ -1026,13 +1031,49 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         int audioInputCount = 0;
         Map<Integer, AudioSegment> audioInputMap = new HashMap<>();
         for (AudioSegment audioSegment : visibleAudioSegments) {
-            String audioPath = "audio/" + audioSegment.getAudioPath();
+            String audioPath = new File(baseDir, audioSegment.getAudioPath()).getAbsolutePath(); // Use absolute path
             if (new File(audioPath).exists()) {
                 command.add("-i");
                 command.add(audioPath);
                 audioInputMap.put(audioInputCount++, audioSegment);
             }
         }
+
+//        // Add video inputs
+//        int videoInputCount = 0;
+//        Map<Integer, VideoSegment> videoInputMap = new HashMap<>();
+//        for (VideoSegment segment : visibleSegments) {
+//            String videoPath = "videos/" + segment.getSourceVideoPath();
+//            if (new File(videoPath).exists()) {
+//                command.add("-i");
+//                command.add(videoPath);
+//                videoInputMap.put(videoInputCount++, segment);
+//            }
+//        }
+//
+//        // Add image inputs
+//        int imageInputCount = 0;
+//        Map<Integer, ImageSegment> imageInputMap = new HashMap<>();
+//        for (ImageSegment imgSegment : visibleImages) {
+//            String imagePath = "images/" + imgSegment.getImagePath();
+//            if (new File(imagePath).exists()) {
+//                command.add("-i");
+//                command.add(imagePath);
+//                imageInputMap.put(imageInputCount++, imgSegment);
+//            }
+//        }
+//
+//        // Add audio inputs
+//        int audioInputCount = 0;
+//        Map<Integer, AudioSegment> audioInputMap = new HashMap<>();
+//        for (AudioSegment audioSegment : visibleAudioSegments) {
+//            String audioPath = "audio/" + audioSegment.getAudioPath();
+//            if (new File(audioPath).exists()) {
+//                command.add("-i");
+//                command.add(audioPath);
+//                audioInputMap.put(audioInputCount++, audioSegment);
+//            }
+//        }
 
         // Build filter complex
         StringBuilder filterComplex = new StringBuilder();
@@ -1804,7 +1845,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectImageDir = new File(baseDir, "images" + File.separator + "projects" + File.separator + projectId);
+        String userId = user.getId().toString();
+        File projectImageDir = new File(baseDir, "images" + File.separator + userId + File.separator + "projects" + File.separator + projectId);
 
         if (!projectImageDir.exists()) {
             boolean dirsCreated = projectImageDir.mkdirs();
@@ -1818,9 +1860,9 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
         imageFile.transferTo(destinationFile);
 
-        String relativePath = "images/projects/" + projectId + "/" + uniqueFileName;
+        String relativePath = buildMediaPath("images", userId, projectId, uniqueFileName);
         try {
-            addImage(project, relativePath, imageFileName); // Use service method
+            addImage(project, relativePath, imageFileName);
         } catch (JsonProcessingException e) {
             throw new IOException("Failed to process image data", e);
         }
@@ -1829,8 +1871,6 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         return projectRepository.save(project);
     }
 
-
-    // Add this method to add the project's image to the timeline
     public void addImageToTimelineFromProject(
             User user,
             String sessionId,
@@ -1838,7 +1878,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
             Integer layer,
             Double timelineStartTime,
             Double timelineEndTime,
-            Map<String, String> filters, // Still present for compatibility but can be null
+            Map<String, String> filters,
             String imageFileName) throws IOException {
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
@@ -1868,8 +1908,9 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         int positionY = 0;
         double scale = 1.0;
 
-        addImageToTimeline(sessionId, imagePath, layer, timelineStartTime, timelineEndTime, positionX, positionY, scale, null);
+        addImageToTimeline(sessionId, imagePath, layer, timelineStartTime, timelineEndTime, positionX, positionY, scale, filters);
     }
+
 
     // Helper method to generate FFmpeg filter string for an image segment
     private String generateImageFilters(ImageSegment imgSegment) {
@@ -2300,7 +2341,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectAudioDir = new File(baseDir, "audio" + File.separator + "projects" + File.separator + projectId);
+        String userId = user.getId().toString();
+        File projectAudioDir = new File(baseDir, "audio" + File.separator + userId + File.separator + "projects" + File.separator + projectId);
 
         if (!projectAudioDir.exists()) {
             boolean dirsCreated = projectAudioDir.mkdirs();
@@ -2314,9 +2356,9 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
         audioFile.transferTo(destinationFile);
 
-        String relativePath = "audio/projects/" + projectId + "/" + uniqueFileName;
+        String relativePath = buildMediaPath("audio", userId, projectId, uniqueFileName);
         try {
-            addAudio(project, relativePath, audioFileName); // Use service method
+            addAudio(project, relativePath, audioFileName);
         } catch (JsonProcessingException e) {
             throw new IOException("Failed to process audio data", e);
         }
@@ -2325,14 +2367,13 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         return projectRepository.save(project);
     }
 
-    // Updated method: addAudioToTimelineFromProject
     public void addAudioToTimelineFromProject(
             User user,
             String sessionId,
             Long projectId,
             int layer,
             double startTime,
-            Double endTime,  // Changed to Double to allow null
+            Double endTime,
             double timelineStartTime,
             Double timelineEndTime,
             String audioFileName) throws IOException, InterruptedException {
@@ -2350,7 +2391,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
         List<Map<String, String>> audioFiles;
         try {
-            audioFiles = getAudio(project); // Use service method
+            audioFiles = getAudio(project);
         } catch (JsonProcessingException e) {
             throw new IOException("Failed to parse project audio", e);
         }
@@ -2367,7 +2408,6 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         String audioPath = targetAudio.get("audioPath");
         System.out.println("Adding audio to timeline with path: " + audioPath);
 
-        // Calculate endTime if not provided
         double calculatedEndTime = endTime != null ? endTime : startTime + getAudioDuration(audioPath);
 
         addAudioToTimeline(sessionId, audioPath, layer, startTime, calculatedEndTime, timelineStartTime, timelineEndTime);
