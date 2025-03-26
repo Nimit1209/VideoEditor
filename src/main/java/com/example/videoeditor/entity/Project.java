@@ -40,48 +40,41 @@ public class Project {
 
     private String exportedVideoPath;
 
-    // Change from single image to list of images
+//    Videos Column
+    @Column(columnDefinition = "TEXT")
+    private String videosJson; // Stores a JSON array of video data
+
+    // Image column
     @Column(columnDefinition = "TEXT")
     private String imagesJson; // Stores a JSON array of image data
 
-    // Getters and setters
-    public List<Map<String, String>> getImages() throws JsonProcessingException {
-        if (imagesJson == null || imagesJson.isEmpty()) {
-            return new ArrayList<>();
-        }
-        ObjectMapper mapper = new ObjectMapper();
-        return mapper.readValue(imagesJson, new TypeReference<List<Map<String, String>>>() {});
-    }
 
-    public void addImage(String imagePath, String imageFileName) throws JsonProcessingException {
-        List<Map<String, String>> images = getImages();
-        Map<String, String> imageData = new HashMap<>();
-        imageData.put("imagePath", imagePath);
-        imageData.put("imageFileName", imageFileName);
-        images.add(imageData);
-        ObjectMapper mapper = new ObjectMapper();
-        this.imagesJson = mapper.writeValueAsString(images);
-    }
-
+//    Audio column
     @Column(columnDefinition = "TEXT")
     private String audioJson; // Stores a JSON array of audio data
 
-    public List<Map<String, String>> getAudio() throws JsonProcessingException {
-        if (audioJson == null || audioJson.isEmpty()) {
-            return new ArrayList<>();
-        }
-        ObjectMapper mapper = new ObjectMapper();
-        return mapper.readValue(audioJson, new TypeReference<List<Map<String, String>>>() {});
+    public String getVideosJson() {
+        return videosJson;
     }
 
-    public void addAudio(String audioPath, String audioFileName) throws JsonProcessingException {
-        List<Map<String, String>> audioFiles = getAudio();
-        Map<String, String> audioData = new HashMap<>();
-        audioData.put("audioPath", audioPath);
-        audioData.put("audioFileName", audioFileName);
-        audioFiles.add(audioData);
-        ObjectMapper mapper = new ObjectMapper();
-        this.audioJson = mapper.writeValueAsString(audioFiles);
+    public void setVideosJson(String videosJson) {
+        this.videosJson = videosJson;
+    }
+
+    public String getImagesJson() {
+        return imagesJson;
+    }
+
+    public void setImagesJson(String imagesJson) {
+        this.imagesJson = imagesJson;
+    }
+
+    public String getAudioJson() {
+        return audioJson;
+    }
+
+    public void setAudioJson(String audioJson) {
+        this.audioJson = audioJson;
     }
 
     public String getExportedVideoPath() {
