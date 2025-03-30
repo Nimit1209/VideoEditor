@@ -39,12 +39,10 @@ public class SecurityConfig implements WebMvcConfigurer {
         config.setAllowedOrigins(List.of("http://localhost:3000"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("Authorization", "Content-Type"));
-        config.setExposedHeaders(List.of("Authorization")); // ✅ Expose JWT Token in response headers
+        config.setExposedHeaders(List.of("Authorization"));
         config.setAllowCredentials(true);
-
-
         source.registerCorsConfiguration("/**", config);
-        return source;  // ✅ Returns the correct type
+        return source;
     }
 
 
@@ -63,16 +61,16 @@ public class SecurityConfig implements WebMvcConfigurer {
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/auth/**").permitAll()
-                        .requestMatchers("/videos/upload", "/videos/my-videos", "/videos/merge", "/videos/edited-videos","/videos/trim", "/videos/split", "/videos/duration/**").authenticated()
+                        .requestMatchers("/videos/upload", "/videos/my-videos", "/videos/merge", "/videos/edited-videos", "/videos/trim", "/videos/split", "/videos/duration/**").authenticated()
+                        .requestMatchers("/projects/{projectId}/images/{filename}").permitAll()
                         .requestMatchers("/projects/**", "/projects/{projectId}/add-to-timeline").authenticated()
                         .requestMatchers("/projects/{projectId}/export").authenticated()
                         .requestMatchers(HttpMethod.GET, "/videos/edited-videos/**").permitAll()
-                        .requestMatchers("/videos/**", "/videos/*").permitAll()  // ✅ Allow public video access
+                        .requestMatchers("/videos/**", "/videos/*").permitAll()
                         .anyRequest().authenticated()
                 )
                 .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(new JwtFilter(jwtUtil), UsernamePasswordAuthenticationFilter.class);
-
 
         return http.build();
     }
@@ -86,12 +84,10 @@ public class SecurityConfig implements WebMvcConfigurer {
                 .allowCredentials(true);
     }
 
-
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
-
 
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration authConfig) throws Exception {

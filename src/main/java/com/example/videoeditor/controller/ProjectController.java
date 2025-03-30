@@ -8,13 +8,17 @@ import com.example.videoeditor.repository.UserRepository;
 import com.example.videoeditor.security.JwtUtil;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-
+import org.springframework.core.io.Resource;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,29 +49,26 @@ public class ProjectController {
     }
 
 //    PROJECT CONTROLLERS......................................................................................
-    @PostMapping
-    public ResponseEntity<Project> createProject(
-            @RequestHeader("Authorization") String token,
-            @RequestBody Map<String, Object> request) throws JsonProcessingException {
-        User user = getUserFromToken(token);
+@PostMapping
+public ResponseEntity<Project> createProject(
+        @RequestHeader("Authorization") String token,
+        @RequestBody Map<String, Object> request) throws JsonProcessingException {
+    // No need to get User manually since service handles authentication
+    String name = (String) request.get("name");
+    Integer width = request.get("width") != null ?
+            ((Number) request.get("width")).intValue() : 1920;
+    Integer height = request.get("height") != null ?
+            ((Number) request.get("height")).intValue() : 1080;
 
-        String name = (String) request.get("name");
-        Integer width = request.get("width") != null ?
-                ((Number) request.get("width")).intValue() : 1920;
-        Integer height = request.get("height") != null ?
-                ((Number) request.get("height")).intValue() : 1080;
-
-        Project project = videoEditingService.createProject(user, name, width, height);
-        return ResponseEntity.ok(project);
-    }
+    Project project = videoEditingService.createProject(name, width, height);
+    return ResponseEntity.ok(project);
+}
 
     @PutMapping("/{projectId}")
     public ResponseEntity<Project> updateProject(
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
             @RequestBody Map<String, Object> request) throws JsonProcessingException {
-        User user = getUserFromToken(token);
-
         String name = (String) request.get("name");
         Integer width = request.get("width") != null ?
                 ((Number) request.get("width")).intValue() : null;
@@ -75,7 +76,7 @@ public class ProjectController {
                 ((Number) request.get("height")).intValue() : null;
 
         try {
-            Project updatedProject = videoEditingService.updateProject(projectId, user, name, width, height);
+            Project updatedProject = videoEditingService.updateProject(projectId, name, width, height);
             return ResponseEntity.ok(updatedProject);
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
@@ -86,10 +87,8 @@ public class ProjectController {
     public ResponseEntity<?> deleteProject(
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId) {
-        User user = getUserFromToken(token);
-
         try {
-            videoEditingService.deleteProject(projectId, user);
+            videoEditingService.deleteProject(projectId);
             return ResponseEntity.ok().build();
         } catch (RuntimeException e) {
             if (e.getMessage().contains("not found")) {
@@ -122,15 +121,30 @@ public class ProjectController {
     }
 
 //    SESSION CONTROLLERS.....................................................................................
-    @PostMapping("/{projectId}/session")
-    public ResponseEntity<String> startEditingSession(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId) throws JsonProcessingException {
-        User user = getUserFromToken(token);
-        String sessionId = videoEditingService.startEditingSession(user, projectId);
+@PostMapping("/{projectId}/session")
+public ResponseEntity<String> startEditingSession(
+        @RequestHeader("Authorization") String token,
+        @PathVariable Long projectId) {
+    try {
+        // No need to get User manually since service handles authentication
+        String sessionId = videoEditingService.startEditingSession(projectId);
         return ResponseEntity.ok(sessionId);
+    } catch (JsonProcessingException e) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body("Error processing session data: " + e.getMessage());
+    } catch (RuntimeException e) {
+        if (e.getMessage().contains("not found")) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body("Project not found: " + e.getMessage());
+        } else if (e.getMessage().contains("Unauthorized")) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body("Unauthorized to edit this project: " + e.getMessage());
+        } else {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error starting editing session: " + e.getMessage());
+        }
     }
-
+}
 
     @PutMapping("/{projectId}/update-segment")
     public ResponseEntity<?> updateVideoSegment(
@@ -139,30 +153,44 @@ public class ProjectController {
             @RequestParam String sessionId,
             @RequestBody Map<String, Object> request) {
         try {
-            User user = getUserFromToken(token);
-
             String segmentId = (String) request.get("segmentId");
+            if (segmentId == null || segmentId.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body("Segment ID is required");
+            }
+
             Integer positionX = request.containsKey("positionX") ?
                     Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.containsKey("positionY") ?
                     Integer.valueOf(request.get("positionY").toString()) : null;
             Double scale = request.containsKey("scale") ?
                     Double.valueOf(request.get("scale").toString()) : null;
-
-            // Add new parameters
             Double timelineStartTime = request.containsKey("timelineStartTime") ?
                     Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Integer layer = request.containsKey("layer") ?
                     Integer.valueOf(request.get("layer").toString()) : null;
 
-            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale, timelineStartTime, layer);
+            // Check if there's anything to update
+            if (positionX == null && positionY == null && scale == null &&
+                    timelineStartTime == null && layer == null) {
+                return ResponseEntity.badRequest().body("No update parameters provided");
+            }
+
+            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale,
+                    timelineStartTime, layer);
             return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error updating video segment: " + e.getMessage());
+        } catch (NumberFormatException e) {
+            return ResponseEntity.badRequest()
+                    .body("Invalid number format in request parameters: " + e.getMessage());
+        } catch (RuntimeException e) {
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Segment or session not found: " + e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error updating video segment: " + e.getMessage());
+            }
         }
     }
-
 
     //EXPORT AND SAVE CONTROLLER..................................................................................
 
@@ -279,15 +307,31 @@ public class ProjectController {
             @RequestParam("video") MultipartFile videoFile,
             @RequestParam("videoFileName") String videoFileName) {
         try {
-            User user = getUserFromToken(token);
-            Project updatedProject = videoEditingService.uploadVideoToProject(user, projectId, videoFile, videoFileName);
+            // Validate inputs
+            if (videoFile == null || videoFile.isEmpty()) {
+                return ResponseEntity.badRequest().body("Video file is required");
+            }
+            if (videoFileName == null || videoFileName.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body("Video file name is required");
+            }
+
+            // Service handles user authentication internally, no need to pass User
+            Project updatedProject = videoEditingService.uploadVideoToProject(projectId, videoFile, videoFileName);
             return ResponseEntity.ok(updatedProject);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error uploading video: " + e.getMessage());
         } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(e.getMessage());
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Project not found: " + e.getMessage());
+            } else if (e.getMessage().contains("Unauthorized")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("Unauthorized to modify this project: " + e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error uploading video: " + e.getMessage());
+            }
         }
     }
 
@@ -298,33 +342,56 @@ public class ProjectController {
             @RequestParam String sessionId,
             @RequestBody Map<String, Object> request) {
         try {
-            User user = getUserFromToken(token);
-            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : 0;
-            Double timelineStartTime = request.get("timelineStartTime") != null ?
-                    ((Number) request.get("timelineStartTime")).doubleValue() : null;
-            Double timelineEndTime = request.get("timelineEndTime") != null ?
-                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            // Extract and validate parameters
             String videoFileName = (String) request.get("videoFileName");
-
-            if (layer < 0) {
-                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
-            }
-            if (timelineStartTime != null && timelineStartTime < 0) {
-                return ResponseEntity.badRequest().body("Timeline start time must be a non-negative value");
-            }
-            if (videoFileName == null || videoFileName.isEmpty()) {
+            if (videoFileName == null || videoFileName.trim().isEmpty()) {
                 return ResponseEntity.badRequest().body("Video filename is required");
             }
 
+            Integer layer = request.get("layer") != null ?
+                    ((Number) request.get("layer")).intValue() : 0;
+            if (layer < 0) {
+                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
+            }
+
+            Double timelineStartTime = request.get("timelineStartTime") != null ?
+                    ((Number) request.get("timelineStartTime")).doubleValue() : null;
+            if (timelineStartTime != null && timelineStartTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline start time must be a non-negative value");
+            }
+
+            Double timelineEndTime = request.get("timelineEndTime") != null ?
+                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            if (timelineEndTime != null && timelineEndTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline end time must be a non-negative value");
+            }
+            if (timelineStartTime != null && timelineEndTime != null && timelineEndTime <= timelineStartTime) {
+                return ResponseEntity.badRequest().body("Timeline end time must be greater than start time");
+            }
+
+            // Service handles user authentication internally, no need to pass User
             videoEditingService.addVideoToTimelineFromProject(
-                    user, sessionId, projectId, layer, timelineStartTime, timelineEndTime, videoFileName);
+                    sessionId, projectId, layer, timelineStartTime, timelineEndTime, videoFileName);
             return ResponseEntity.ok().build();
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error adding video to timeline: " + e.getMessage());
+                    .body("Error processing video: " + e.getMessage());
+        } catch (RuntimeException e) {
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Project, session, or video not found: " + e.getMessage());
+            } else if (e.getMessage().contains("Unauthorized")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("Unauthorized to modify this project: " + e.getMessage());
+            } else if (e.getMessage().contains("overlaps")) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body("Timeline position conflict: " + e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error adding video to timeline: " + e.getMessage());
+            }
         }
     }
-
 //    @PostMapping("/{projectId}/add-to-timeline")
 //    public ResponseEntity<?> addVideoToTimeline(
 //            @RequestHeader("Authorization") String token,
@@ -656,24 +723,41 @@ public class ProjectController {
     }
 
 //    IMAGE FUNCTIONALITY.........................................................................................
-    @PostMapping("/{projectId}/upload-image")
-    public ResponseEntity<?> uploadImage(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam("image") MultipartFile imageFile,
-            @RequestParam("imageFileName") String imageFileName) {
-        try {
-            User user = getUserFromToken(token);
-            Project updatedProject = videoEditingService.uploadImageToProject(user, projectId, imageFile, imageFileName);
-            return ResponseEntity.ok(updatedProject);
-        } catch (IOException e) {
+@PostMapping("/{projectId}/upload-image")
+public ResponseEntity<?> uploadImage(
+        @RequestHeader("Authorization") String token,
+        @PathVariable Long projectId,
+        @RequestParam("image") MultipartFile imageFile,
+        @RequestParam("imageFileName") String imageFileName) {
+    try {
+        // Validate inputs
+        if (imageFile == null || imageFile.isEmpty()) {
+            return ResponseEntity.badRequest().body("Image file is required");
+        }
+        if (imageFileName == null || imageFileName.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body("Image file name is required");
+        }
+
+        // Service handles user authentication internally, no need to pass User
+        Project updatedProject = videoEditingService.uploadImageToProject(projectId, imageFile, imageFileName);
+        return ResponseEntity.ok(updatedProject);
+    } catch (IOException e) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body("Error uploading image: " + e.getMessage());
+    } catch (RuntimeException e) {
+        if (e.getMessage().contains("not found")) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body("Project not found: " + e.getMessage());
+        } else if (e.getMessage().contains("Unauthorized")) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body("Unauthorized to modify this project: " + e.getMessage());
+        } else {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error uploading image: " + e.getMessage());
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(e.getMessage());
         }
     }
+}
+
     @PostMapping("/{projectId}/add-project-image-to-timeline")
     public ResponseEntity<?> addProjectImageToTimeline(
             @RequestHeader("Authorization") String token,
@@ -681,36 +765,53 @@ public class ProjectController {
             @RequestParam String sessionId,
             @RequestBody Map<String, Object> request) {
         try {
-            User user = getUserFromToken(token);
-            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : 0;
-            Double timelineStartTime = request.get("timelineStartTime") != null ?
-                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
-            Double timelineEndTime = request.get("timelineEndTime") != null ?
-                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            // Extract and validate parameters
             String imageFileName = (String) request.get("imageFileName");
-
-            if (layer < 0) {
-                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
-            }
-            if (timelineStartTime < 0) {
-                return ResponseEntity.badRequest().body("Timeline start time must be non-negative");
-            }
-            if (timelineEndTime != null && timelineEndTime < timelineStartTime) {
-                return ResponseEntity.badRequest().body("Timeline end time must be greater than start time");
-            }
-            if (imageFileName == null || imageFileName.isEmpty()) {
+            if (imageFileName == null || imageFileName.trim().isEmpty()) {
                 return ResponseEntity.badRequest().body("Image filename is required");
             }
 
+            Integer layer = request.get("layer") != null ?
+                    ((Number) request.get("layer")).intValue() : 0;
+            if (layer < 0) {
+                return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
+            }
+
+            Double timelineStartTime = request.get("timelineStartTime") != null ?
+                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
+            if (timelineStartTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline start time must be non-negative");
+            }
+
+            Double timelineEndTime = request.get("timelineEndTime") != null ?
+                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            if (timelineEndTime != null && timelineEndTime < timelineStartTime) {
+                return ResponseEntity.badRequest().body("Timeline end time must be greater than start time");
+            }
+
+            // Handle optional filters
+            @SuppressWarnings("unchecked")
+            Map<String, String> filters = request.containsKey("filters") ?
+                    (Map<String, String>) request.get("filters") : null;
+
+            // Service handles user authentication internally, no need to pass User
             videoEditingService.addImageToTimelineFromProject(
-                    user, sessionId, projectId, layer, timelineStartTime, timelineEndTime, null, imageFileName);
+                    sessionId, projectId, layer, timelineStartTime, timelineEndTime, filters, imageFileName);
             return ResponseEntity.ok().build();
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error adding project image to timeline: " + e.getMessage());
+                    .body("Error adding image to timeline: " + e.getMessage());
         } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(e.getMessage());
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Project, session, or image not found: " + e.getMessage());
+            } else if (e.getMessage().contains("Unauthorized")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("Unauthorized to modify this project: " + e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error adding image to timeline: " + e.getMessage());
+            }
         }
     }
 
@@ -830,27 +931,6 @@ public class ProjectController {
                     .body("Error applying image filter: " + e.getMessage());
         }
     }
-    @DeleteMapping("/{projectId}/remove-image")
-    public ResponseEntity<?> removeImageSegment(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestParam String segmentId) {
-        try {
-            User user = getUserFromToken(token);
-
-            // Validate segmentId
-            if (segmentId == null || segmentId.isEmpty()) {
-                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
-            }
-
-            videoEditingService.removeImageSegment(sessionId, segmentId);
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error removing image segment: " + e.getMessage());
-        }
-    }
 
 //    AUDIO FUNCTIONALITY .......................................................................................
 
@@ -861,15 +941,31 @@ public class ProjectController {
             @RequestParam("audio") MultipartFile audioFile,
             @RequestParam("audioFileName") String audioFileName) {
         try {
-            User user = getUserFromToken(token);
-            Project updatedProject = videoEditingService.uploadAudioToProject(user, projectId, audioFile, audioFileName);
+            // Validate inputs
+            if (audioFile == null || audioFile.isEmpty()) {
+                return ResponseEntity.badRequest().body("Audio file is required");
+            }
+            if (audioFileName == null || audioFileName.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body("Audio file name is required");
+            }
+
+            // Service handles user authentication internally, no need to pass User
+            Project updatedProject = videoEditingService.uploadAudioToProject(projectId, audioFile, audioFileName);
             return ResponseEntity.ok(updatedProject);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error uploading audio: " + e.getMessage());
         } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(e.getMessage());
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Project not found: " + e.getMessage());
+            } else if (e.getMessage().contains("Unauthorized")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("Unauthorized to modify this project: " + e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error uploading audio: " + e.getMessage());
+            }
         }
     }
 
@@ -880,35 +976,62 @@ public class ProjectController {
             @RequestParam String sessionId,
             @RequestBody Map<String, Object> request) {
         try {
-            User user = getUserFromToken(token);
-            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : -1;
-            Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : 0.0;
-            Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null; // Allow null
-            Double timelineStartTime = request.get("timelineStartTime") != null ?
-                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
-            Double timelineEndTime = request.get("timelineEndTime") != null ?
-                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            // Extract and validate parameters
             String audioFileName = (String) request.get("audioFileName");
-
-            if (layer >= 0) {
-                return ResponseEntity.badRequest().body("Audio layer must be negative");
-            }
-            if (startTime < 0) {
-                return ResponseEntity.badRequest().body("Start time must be non-negative");
-            }
-            if (timelineStartTime < 0) {
-                return ResponseEntity.badRequest().body("Timeline start time must be non-negative");
-            }
-            if (audioFileName == null || audioFileName.isEmpty()) {
+            if (audioFileName == null || audioFileName.trim().isEmpty()) {
                 return ResponseEntity.badRequest().body("Audio filename is required");
             }
 
+            Integer layer = request.get("layer") != null ?
+                    ((Number) request.get("layer")).intValue() : -1;
+            if (layer >= 0) {
+                return ResponseEntity.badRequest().body("Audio layer must be negative");
+            }
+
+            Double startTime = request.get("startTime") != null ?
+                    ((Number) request.get("startTime")).doubleValue() : 0.0;
+            if (startTime < 0) {
+                return ResponseEntity.badRequest().body("Start time must be non-negative");
+            }
+
+            Double endTime = request.get("endTime") != null ?
+                    ((Number) request.get("endTime")).doubleValue() : null;
+            if (endTime != null && endTime < startTime) {
+                return ResponseEntity.badRequest().body("End time must be greater than start time");
+            }
+
+            Double timelineStartTime = request.get("timelineStartTime") != null ?
+                    ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
+            if (timelineStartTime < 0) {
+                return ResponseEntity.badRequest().body("Timeline start time must be non-negative");
+            }
+
+            Double timelineEndTime = request.get("timelineEndTime") != null ?
+                    ((Number) request.get("timelineEndTime")).doubleValue() : null;
+            if (timelineEndTime != null && timelineEndTime < timelineStartTime) {
+                return ResponseEntity.badRequest().body("Timeline end time must be greater than timeline start time");
+            }
+
+            // Service handles user authentication internally, no need to pass User
             videoEditingService.addAudioToTimelineFromProject(
-                    user, sessionId, projectId, layer, startTime, endTime, timelineStartTime, timelineEndTime, audioFileName);
+                    sessionId, projectId, layer, startTime, endTime, timelineStartTime, timelineEndTime, audioFileName);
             return ResponseEntity.ok().build();
-        } catch (Exception e) {
+        } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding audio to timeline: " + e.getMessage());
+        } catch (RuntimeException e) {
+            if (e.getMessage().contains("not found")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body("Project, session, or audio not found: " + e.getMessage());
+            } else if (e.getMessage().contains("Unauthorized")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("Unauthorized to modify this project: " + e.getMessage());
+            } else {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error adding audio to timeline: " + e.getMessage());
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -981,5 +1104,41 @@ public class ProjectController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error removing audio segment: " + e.getMessage());
         }
+    }
+
+    @GetMapping("/{projectId}/images/{filename}")
+    public ResponseEntity<Resource> serveImage(
+            @PathVariable Long projectId,
+            @PathVariable String filename) {
+        try {
+            // Define the directory where images are stored
+            String imageDirectory = "images/projects/" + projectId + "/";
+            Path filePath = Paths.get(imageDirectory).resolve(filename).normalize();
+            Resource resource = new UrlResource(filePath.toUri());
+
+            if (resource.exists() && resource.isReadable()) {
+                // Determine the content type based on file extension
+                String contentType = determineContentType(filename);
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .body(resource);
+            } else {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            }
+        } catch (Exception e) {
+            // Log the error for debugging
+            System.err.println("Error serving image: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
+        }
+    }
+    // Helper method to determine content type
+    private String determineContentType(String filename) {
+        filename = filename.toLowerCase();
+        if (filename.endsWith(".png")) return "image/png";
+        if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return "image/jpeg";
+        if (filename.endsWith(".gif")) return "image/gif";
+        if (filename.endsWith(".webp")) return "image/webp";
+        return "application/octet-stream"; // Default fallback
     }
 }

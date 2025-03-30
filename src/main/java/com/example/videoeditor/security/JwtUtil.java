@@ -2,6 +2,7 @@ package com.example.videoeditor.security;
 
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import javax.crypto.SecretKey;
 import java.security.Key;
@@ -9,23 +10,26 @@ import java.util.Date;
 
 @Component
 public class JwtUtil {
-    private static final String SECRET_KEY = "my-super-secret-key-that-should-be-long-enough-and-secure";
+    @Value("${jwt.secret}")
+    private String secretKey;
     private static final long EXPIRATION_TIME = 1000 * 60 * 60; // 1 hour
 
-    private final Key key = Keys.hmacShaKeyFor(SECRET_KEY.getBytes());
+    private Key getSigningKey() {
+        return Keys.hmacShaKeyFor(secretKey.getBytes());
+    }
 
     public String generateToken(String email) {
         return Jwts.builder()
                 .subject(email)
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + EXPIRATION_TIME))
-                .signWith(key)
+                .signWith(getSigningKey())
                 .compact();
     }
 
     public String extractEmail(String token) {
         return Jwts.parser()
-                .verifyWith((SecretKey) key)  // ✅ Try using decryptWith() instead of verifyWith()
+                .verifyWith((SecretKey) getSigningKey())
                 .build()
                 .parseSignedClaims(token)
                 .getPayload()
@@ -35,7 +39,7 @@ public class JwtUtil {
     public boolean validateToken(String token) {
         try {
             Jwts.parser()
-                    .verifyWith((SecretKey) key)  // ✅ Try using decryptWith()
+                    .verifyWith((SecretKey) getSigningKey())
                     .build()
                     .parseSignedClaims(token);
             return true;

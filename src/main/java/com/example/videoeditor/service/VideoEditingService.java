@@ -4,11 +4,13 @@ import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.EditedVideoRepository;
 import com.example.videoeditor.repository.ProjectRepository;
+import com.example.videoeditor.repository.UserRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -29,6 +31,7 @@ import java.io.IOException;@Service
 
 public class VideoEditingService {
     private final ProjectRepository projectRepository;
+    private final UserRepository userRepository; // Add this
     private final EditedVideoRepository editedVideoRepository;
     private final ObjectMapper objectMapper;
     private final Map<String, EditSession> activeSessions;
@@ -37,15 +40,23 @@ public class VideoEditingService {
 
 
     public VideoEditingService(
-            ProjectRepository projectRepository,
+            ProjectRepository projectRepository, UserRepository userRepository,
             EditedVideoRepository editedVideoRepository,
             ObjectMapper objectMapper
     ) {
         this.projectRepository = projectRepository;
+        this.userRepository = userRepository;
         this.editedVideoRepository = editedVideoRepository;
         this.objectMapper = objectMapper;
         this.activeSessions = new ConcurrentHashMap<>();
     }
+    // Helper method to get the current authenticated user
+    private User getCurrentUser() {
+        String email = SecurityContextHolder.getContext().getAuthentication().getName();
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Authenticated user not found in database"));
+    }
+
 
     @Data
     private class EditSession {
@@ -161,19 +172,21 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
     }
 
 //    PROJECT SERVICE CODE.........................................................................................
-    public Project createProject(User user, String name, Integer width, Integer height) throws JsonProcessingException {
-        Project project = new Project();
-        project.setUser(user);
-        project.setName(name);
-        project.setWidth(width);
-        project.setHeight(height);
-        project.setStatus("DRAFT");
-        project.setLastModified(LocalDateTime.now());
-        project.setTimelineState(objectMapper.writeValueAsString(new TimelineState()));
-        return projectRepository.save(project);
-    }
+public Project createProject(String name, Integer width, Integer height) throws JsonProcessingException {
+    User user = getCurrentUser();
+    Project project = new Project();
+    project.setUser(user);
+    project.setName(name);
+    project.setWidth(width);
+    project.setHeight(height);
+    project.setStatus("DRAFT");
+    project.setLastModified(LocalDateTime.now());
+    project.setTimelineState(objectMapper.writeValueAsString(new TimelineState()));
+    return projectRepository.save(project);
+}
 
-    public Project updateProject(Long projectId, User user, String name, Integer width, Integer height) throws JsonProcessingException {
+    public Project updateProject(Long projectId, String name, Integer width, Integer height) throws JsonProcessingException {
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
@@ -189,7 +202,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         return projectRepository.save(project);
     }
 
-    public void deleteProject(Long projectId, User user) {
+    public void deleteProject(Long projectId) {
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
@@ -202,6 +216,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
                         entry.getValue().getProjectId().equals(projectId));
         projectRepository.delete(project);
     }
+
     public void saveProject(String sessionId) throws JsonProcessingException {
         EditSession session = getSession(sessionId);
         Project project = projectRepository.findById(session.getProjectId())
@@ -225,7 +240,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
     }
 
 //    SESSION SERVICE CODE.......................................................................................
-    public String startEditingSession(User user, Long projectId) throws JsonProcessingException {
+    public String startEditingSession(Long projectId) throws JsonProcessingException {
+        User user = getCurrentUser();
         String sessionId = UUID.randomUUID().toString();
         EditSession session = new EditSession();
         session.setSessionId(sessionId);
@@ -237,6 +253,9 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         if (projectId != null) {
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found"));
+            if (!project.getUser().getId().equals(user.getId())) {
+                throw new RuntimeException("Unauthorized to edit this project");
+            }
             timelineState = objectMapper.readValue(project.getTimelineState(), TimelineState.class);
 
             if (timelineState.getCanvasWidth() == null) {
@@ -255,7 +274,6 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         activeSessions.put(sessionId, session);
         return sessionId;
     }
-
 //    SPLIT VIDEO FUNCTIONALITY .................................................................................
     public void splitVideo(String sessionId, String videoPath, double splitTime, String segmentId) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
@@ -427,7 +445,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
     // Utility method to build media paths
     private String buildMediaPath(String mediaType, String userId, Long projectId, String fileName) {
-        return String.format("%s/%s/projects/%d/%s", mediaType, userId, projectId, fileName);
+        String sanitizedUserId = userId.replaceAll("[^a-zA-Z0-9-]", "_");
+        return String.format("%s/%s/projects/%d/%s", mediaType, sanitizedUserId, projectId, fileName);
     }
 
 //    VIDEO FUNCTIONALITY.........................................................................................
@@ -467,7 +486,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
     }
 
 
-    public Project uploadVideoToProject(User user, Long projectId, MultipartFile videoFile, String videoFileName) throws IOException {
+    public Project uploadVideoToProject(Long projectId, MultipartFile videoFile, String videoFileName) throws IOException {
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -546,14 +566,13 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
     }
 
     public void addVideoToTimelineFromProject(
-            User user,
             String sessionId,
             Long projectId,
             Integer layer,
             Double timelineStartTime,
             Double timelineEndTime,
             String videoFileName) throws IOException, InterruptedException {
-
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -1837,7 +1856,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
 
     // Add this method to VideoEditingService
-    public Project uploadImageToProject(User user, Long projectId, MultipartFile imageFile, String imageFileName) throws IOException {
+    public Project uploadImageToProject(Long projectId, MultipartFile imageFile, String imageFileName) throws IOException {
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -1872,7 +1892,6 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
     }
 
     public void addImageToTimelineFromProject(
-            User user,
             String sessionId,
             Long projectId,
             Integer layer,
@@ -1880,6 +1899,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
             Double timelineEndTime,
             Map<String, String> filters,
             String imageFileName) throws IOException {
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -1911,8 +1931,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
         addImageToTimeline(sessionId, imagePath, layer, timelineStartTime, timelineEndTime, positionX, positionY, scale, filters);
     }
 
-
-    // Helper method to generate FFmpeg filter string for an image segment
+        // Helper method to generate FFmpeg filter string for an image segment
     private String generateImageFilters(ImageSegment imgSegment) {
         StringBuilder filterStr = new StringBuilder();
 
@@ -2333,7 +2352,8 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
 //    AUDIO FUNCTIONALITY ........................................................................................
 
-    public Project uploadAudioToProject(User user, Long projectId, MultipartFile audioFile, String audioFileName) throws IOException {
+    public Project uploadAudioToProject(Long projectId, MultipartFile audioFile, String audioFileName) throws IOException {
+        User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -2368,7 +2388,6 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
     }
 
     public void addAudioToTimelineFromProject(
-            User user,
             String sessionId,
             Long projectId,
             int layer,
@@ -2377,7 +2396,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
             double timelineStartTime,
             Double timelineEndTime,
             String audioFileName) throws IOException, InterruptedException {
-
+        User user = getCurrentUser();
         if (layer >= 0) {
             throw new RuntimeException("Audio layers must be negative (e.g., -1, -2, -3)");
         }
@@ -2412,6 +2431,7 @@ public List<Map<String, String>> getVideos(Project project) throws JsonProcessin
 
         addAudioToTimeline(sessionId, audioPath, layer, startTime, calculatedEndTime, timelineStartTime, timelineEndTime);
     }
+
 
     public void addAudioToTimeline(
             String sessionId,

@@ -8,13 +8,6 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class User {
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -25,6 +18,47 @@ public class User {
 
     @Column(nullable = false)
     private String password;
+
+    @Column
+    private String name; // New field for Google user’s name
+
+    @Column
+    private boolean googleAuth; // Flag to indicate Google-authenticated user
+
+    @Column(name = "first_login", nullable = false)
+    private boolean firstLogin = true; // Default to true for new users
+
+    public boolean isFirstLogin() {
+        return firstLogin;
+    }
+
+    public void setFirstLogin(boolean firstLogin) {
+        this.firstLogin = firstLogin;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public boolean isGoogleAuth() {
+        return googleAuth;
+    }
+
+    public void setGoogleAuth(boolean googleAuth) {
+        this.googleAuth = googleAuth;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
 
     public void setEmail(String email) {
         this.email = email;
