@@ -1,12 +1,12 @@
 package com.example.videoeditor.controller;
 
 import com.example.videoeditor.dto.*;
+import com.example.videoeditor.service.VideoEditingService;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.ProjectRepository;
 import com.example.videoeditor.repository.UserRepository;
 import com.example.videoeditor.security.JwtUtil;
-import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
@@ -218,94 +218,20 @@ public ResponseEntity<String> startEditingSession(
         return ResponseEntity.ok(exportedVideo.getName());
     }
 
-//SPLIT FUNCTIONALITY CONTROLLERS.............................................................................
-    @PostMapping("/{projectId}/split")
-    public ResponseEntity<?> splitVideo(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestBody VideoController.SplitRequest request) {
-        try {
-            User user = getUserFromToken(token);
-            videoEditingService.splitVideo(sessionId, request.getVideoPath(), request.getSplitTimeSeconds(), request.getSegmentId());
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error splitting video: " + e.getMessage());
-        }
-    }
-
-    @PutMapping("/{projectId}/split")
-    public ResponseEntity<?> updateSplitVideo(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestBody Map<String, Object> request) {
-        try {
-            User user = getUserFromToken(token);
-
-            String segmentId = (String) request.get("segmentId");
-            double newSplitTime = Double.parseDouble(request.get("newSplitTime").toString());
-
-            videoEditingService.updateSplitVideo(sessionId, segmentId, newSplitTime);
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error updating video split: " + e.getMessage());
-        }
-    }
-
-    @DeleteMapping("/{projectId}/split")
-    public ResponseEntity<?> deleteSplitVideo(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestBody Map<String, Object> request) {
-        try {
-            User user = getUserFromToken(token);
-
-            String firstSegmentId = (String) request.get("firstSegmentId");
-            String secondSegmentId = (String) request.get("secondSegmentId");
-
-            videoEditingService.deleteSplitVideo(sessionId, firstSegmentId, secondSegmentId);
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error deleting video split: " + e.getMessage());
-        }
-    }
-
-
-    @DeleteMapping("/{projectId}/remove-segment")
-    public ResponseEntity<?> removeVideoSegment(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestParam String segmentId) {
-        try {
-            User user = getUserFromToken(token);
-
-            // Call the service method to remove the video segment
-            videoEditingService.removeVideoSegment(sessionId, segmentId);
-
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error removing video segment: " + e.getMessage());
-        }
-    }
-
 
 //    VIDEO CONTROLLERS .....................................................................................
 
-
-
-    @PostMapping("/{projectId}/upload-video")
+    @PostMapping
+            ("/{projectId}/upload-video")
     public ResponseEntity<?> uploadVideo(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam("video") MultipartFile videoFile,
-            @RequestParam("videoFileName") String videoFileName) {
+            @RequestHeader
+                    ("Authorization") String token,
+            @PathVariable
+            Long projectId,
+            @RequestParam
+                    ("video") MultipartFile videoFile,
+            @RequestParam
+                    ("videoFileName") String videoFileName) {
         try {
             // Validate inputs
             if (videoFile == null || videoFile.isEmpty()) {
@@ -392,6 +318,9 @@ public ResponseEntity<String> startEditingSession(
             }
         }
     }
+
+
+
 //    @PostMapping("/{projectId}/add-to-timeline")
 //    public ResponseEntity<?> addVideoToTimeline(
 //            @RequestHeader("Authorization") String token,

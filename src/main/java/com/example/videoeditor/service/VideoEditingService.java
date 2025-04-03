@@ -5,6 +5,7 @@ import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.EditedVideoRepository;
 import com.example.videoeditor.repository.ProjectRepository;
 import com.example.videoeditor.repository.UserRepository;
+import com.example.videoeditor.repository.VideoRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +36,7 @@ public class VideoEditingService {
     private final EditedVideoRepository editedVideoRepository;
     private final ObjectMapper objectMapper;
     private final Map<String, EditSession> activeSessions;
+    private final VideoRepository videoRepository;
     private final String ffmpegPath = "/usr/local/bin/ffmpeg";
     private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
 
@@ -42,12 +44,13 @@ public class VideoEditingService {
     public VideoEditingService(
             ProjectRepository projectRepository, UserRepository userRepository,
             EditedVideoRepository editedVideoRepository,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper, VideoRepository videoRepository
     ) {
         this.projectRepository = projectRepository;
         this.userRepository = userRepository;
         this.editedVideoRepository = editedVideoRepository;
         this.objectMapper = objectMapper;
+        this.videoRepository = videoRepository;
         this.activeSessions = new ConcurrentHashMap<>();
     }
     // Helper method to get the current authenticated user
@@ -274,182 +277,16 @@ public Project createProject(String name, Integer width, Integer height) throws 
         activeSessions.put(sessionId, session);
         return sessionId;
     }
-//    SPLIT VIDEO FUNCTIONALITY .................................................................................
-    public void splitVideo(String sessionId, String videoPath, double splitTime, String segmentId) throws IOException, InterruptedException {
-        EditSession session = getSession(sessionId);
-
-        File file = new File(videoPath);
-        if (!file.exists()) {
-            File alternativeFile = new File("videos/" + videoPath);
-            if (alternativeFile.exists()) {
-                videoPath = "videos/" + videoPath;
-                file = alternativeFile;
-            } else {
-                throw new RuntimeException("Video file does not exist: " + videoPath);
-            }
-        }
-
-        VideoSegment originalSegment = null;
-        int originalSegmentIndex = -1;
-
-        for (int i = 0; i < session.getTimelineState().getSegments().size(); i++) {
-            VideoSegment segment = session.getTimelineState().getSegments().get(i);
-            if (segment.getId().equals(segmentId)) {
-                originalSegment = segment;
-                originalSegmentIndex = i;
-                break;
-            }
-        }
-
-        if (originalSegment == null) {
-            throw new RuntimeException("Original segment not found with ID: " + segmentId);
-        }
-
-        double startTime = originalSegment.getStartTime();
-        double endTime = originalSegment.getEndTime() == -1 ? getVideoDuration(videoPath) : originalSegment.getEndTime();
-
-        if (splitTime <= (startTime + 0.1) || splitTime >= (endTime - 0.1)) {
-            throw new RuntimeException("Invalid split point. Must be between " + startTime + " and " + endTime);
-        }
-
-        VideoSegment firstPart = new VideoSegment();
-        firstPart.setSourceVideoPath(originalSegment.getSourceVideoPath());
-        firstPart.setStartTime(startTime);
-        firstPart.setEndTime(splitTime);
-
-        VideoSegment secondPart = new VideoSegment();
-        secondPart.setSourceVideoPath(originalSegment.getSourceVideoPath());
-        secondPart.setStartTime(splitTime);
-        secondPart.setEndTime(endTime);
-
-        session.getTimelineState().getSegments().set(originalSegmentIndex, firstPart);
-        session.getTimelineState().getSegments().add(originalSegmentIndex + 1, secondPart);
-        session.setLastAccessTime(System.currentTimeMillis());
-    }
-
-    public void updateSplitVideo(String sessionId, String segmentId, double newSplitTime) throws IOException, InterruptedException {
-        EditSession session = getSession(sessionId);
-
-        VideoSegment segment = null;
-        int segmentIndex = -1;
-
-        for (int i = 0; i < session.getTimelineState().getSegments().size(); i++) {
-            VideoSegment s = session.getTimelineState().getSegments().get(i);
-            if (s.getId().equals(segmentId)) {
-                segment = s;
-                segmentIndex = i;
-                break;
-            }
-        }
-
-        if (segment == null) {
-            throw new RuntimeException("Segment not found with ID: " + segmentId);
-        }
-
-        if (segmentIndex >= session.getTimelineState().getSegments().size() - 1) {
-            throw new RuntimeException("Cannot update split: No subsequent segment found");
-        }
-
-        VideoSegment nextSegment = session.getTimelineState().getSegments().get(segmentIndex + 1);
-
-        if (!segment.getSourceVideoPath().equals(nextSegment.getSourceVideoPath())) {
-            throw new RuntimeException("Cannot update split: Segments are not from the same source video");
-        }
-
-        double originalStartTime = segment.getStartTime();
-        double originalEndTime = nextSegment.getEndTime();
-
-        if (newSplitTime <= (originalStartTime + 0.1) ||
-                (originalEndTime != -1 && newSplitTime >= (originalEndTime - 0.1))) {
-            throw new RuntimeException("Invalid split point. Must be between " +
-                    (originalStartTime + 0.1) + " and " +
-                    (originalEndTime != -1 ? (originalEndTime - 0.1) : "end of video"));
-        }
-        segment.setEndTime(newSplitTime);
-        nextSegment.setStartTime(newSplitTime);
-        session.setLastAccessTime(System.currentTimeMillis());
-    }
-
-    public void deleteSplitVideo(String sessionId, String firstSegmentId, String secondSegmentId) {
-        EditSession session = getSession(sessionId);
-
-        VideoSegment firstSegment = null;
-        VideoSegment secondSegment = null;
-        int firstIndex = -1;
-        int secondIndex = -1;
-
-        List<VideoSegment> segments = session.getTimelineState().getSegments();
-
-        for (int i = 0; i < segments.size(); i++) {
-            VideoSegment s = segments.get(i);
-            if (s.getId().equals(firstSegmentId)) {
-                firstSegment = s;
-                firstIndex = i;
-            } else if (s.getId().equals(secondSegmentId)) {
-                secondSegment = s;
-                secondIndex = i;
-            }
-        }
-
-        if (firstSegment == null || secondSegment == null) {
-            throw new RuntimeException("One or both segments not found");
-        }
-
-        if (Math.abs(firstIndex - secondIndex) != 1) {
-            throw new RuntimeException("Segments must be adjacent to merge");
-        }
-
-        if (!firstSegment.getSourceVideoPath().equals(secondSegment.getSourceVideoPath())) {
-            throw new RuntimeException("Cannot merge segments from different source videos");
-        }
-
-        VideoSegment earlier, later;
-        int earlierIndex, laterIndex;
-
-        if (firstIndex < secondIndex) {
-            earlier = firstSegment;
-            later = secondSegment;
-            earlierIndex = firstIndex;
-            laterIndex = secondIndex;
-        } else {
-            earlier = secondSegment;
-            later = firstSegment;
-            earlierIndex = secondIndex;
-            laterIndex = firstIndex;
-        }
-
-        VideoSegment mergedSegment = new VideoSegment();
-        mergedSegment.setId(UUID.randomUUID().toString());
-        mergedSegment.setSourceVideoPath(earlier.getSourceVideoPath());
-        mergedSegment.setStartTime(earlier.getStartTime());
-        mergedSegment.setEndTime(later.getEndTime());
-
-        if (earlier.getPositionX() != null) {
-            mergedSegment.setPositionX(earlier.getPositionX());
-            mergedSegment.setPositionY(earlier.getPositionY());
-        } else if (later.getPositionX() != null) {
-            mergedSegment.setPositionX(later.getPositionX());
-            mergedSegment.setPositionY(later.getPositionY());
-        }
-
-        if (earlier.getScale() != null) {
-            mergedSegment.setScale(earlier.getScale());
-        } else if (later.getScale() != null) {
-            mergedSegment.setScale(later.getScale());
-        }
-
-        segments.remove(laterIndex);
-        segments.set(earlierIndex, mergedSegment);
-        session.setLastAccessTime(System.currentTimeMillis());
-    }
-
     // Utility method to build media paths
-    private String buildMediaPath(String mediaType, String userId, Long projectId, String fileName) {
-        String sanitizedUserId = userId.replaceAll("[^a-zA-Z0-9-]", "_");
-        return String.format("%s/%s/projects/%d/%s", mediaType, sanitizedUserId, projectId, fileName);
+    private String buildMediaPath(String mediaType, Long projectId, String fileName) {
+        if ("videos".equals(mediaType)) {
+            return "videos/" + fileName; // Simplified path for videos
+        }
+        // Keep existing structure for images and audio
+        return String.format("%s/projects/%d/%s", mediaType, projectId, fileName);
     }
 
-//    VIDEO FUNCTIONALITY.........................................................................................
+    //    VIDEO FUNCTIONALITY.........................................................................................
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
         // Construct absolute path using baseDir
         File videoFile = new File(baseDir, videoPath);
@@ -484,8 +321,6 @@ public Project createProject(String name, Integer width, Integer height) throws 
         }
         return 300; // Default to 5 minutes
     }
-
-
     public Project uploadVideoToProject(Long projectId, MultipartFile videoFile, String videoFileName) throws IOException {
         User user = getCurrentUser();
         Project project = projectRepository.findById(projectId)
@@ -495,22 +330,23 @@ public Project createProject(String name, Integer width, Integer height) throws 
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        String userId = user.getId().toString();
-        File projectVideoDir = new File(baseDir, "videos" + File.separator + userId + File.separator + "projects" + File.separator + projectId);
+        // New path: directly under "videos" directory
+        File videoDir = new File(baseDir, "videos");
 
-        if (!projectVideoDir.exists()) {
-            boolean dirsCreated = projectVideoDir.mkdirs();
+        if (!videoDir.exists()) {
+            boolean dirsCreated = videoDir.mkdirs();
             if (!dirsCreated) {
-                throw new IOException("Failed to create directory: " + projectVideoDir.getAbsolutePath());
+                throw new IOException("Failed to create directory: " + videoDir.getAbsolutePath());
             }
         }
 
         String uniqueFileName = projectId + "_" + System.currentTimeMillis() + "_" + videoFile.getOriginalFilename();
-        File destinationFile = new File(projectVideoDir, uniqueFileName);
+        File destinationFile = new File(videoDir, uniqueFileName);
 
         videoFile.transferTo(destinationFile);
 
-        String relativePath = buildMediaPath("videos", userId, projectId, uniqueFileName);
+        // Updated relative path for videos
+        String relativePath = buildMediaPath("videos", projectId, uniqueFileName);
         try {
             addVideo(project, relativePath, videoFileName);
         } catch (JsonProcessingException e) {
@@ -525,7 +361,6 @@ public Project createProject(String name, Integer width, Integer height) throws 
             throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
 
-        // Use the provided videoPath directly (relative path from baseDir)
         double duration = getVideoDuration(videoPath);
         layer = layer != null ? layer : 0;
 
@@ -548,7 +383,7 @@ public Project createProject(String name, Integer width, Integer height) throws 
         }
 
         VideoSegment segment = new VideoSegment();
-        segment.setSourceVideoPath(videoPath); // Use relative path as stored
+        segment.setSourceVideoPath(videoPath);
         segment.setStartTime(0);
         segment.setEndTime(duration);
         segment.setPositionX(0);
@@ -602,6 +437,7 @@ public Project createProject(String name, Integer width, Integer height) throws 
 
         addVideoToTimeline(sessionId, videoPath, layer, timelineStartTime, timelineEndTime);
     }
+
 
     public void removeVideoSegment(String sessionId, String segmentId) {
         EditSession session = getSession(sessionId);
@@ -1865,8 +1701,8 @@ public Project createProject(String name, Integer width, Integer height) throws 
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        String userId = user.getId().toString();
-        File projectImageDir = new File(baseDir, "images" + File.separator + userId + File.separator + "projects" + File.separator + projectId);
+        // Updated path without userId
+        File projectImageDir = new File(baseDir, "images" + File.separator + "projects" + File.separator + projectId);
 
         if (!projectImageDir.exists()) {
             boolean dirsCreated = projectImageDir.mkdirs();
@@ -1880,7 +1716,8 @@ public Project createProject(String name, Integer width, Integer height) throws 
 
         imageFile.transferTo(destinationFile);
 
-        String relativePath = buildMediaPath("images", userId, projectId, uniqueFileName);
+        // Updated relative path without userId
+        String relativePath = buildMediaPath("images", projectId, uniqueFileName);
         try {
             addImage(project, relativePath, imageFileName);
         } catch (JsonProcessingException e) {
@@ -2361,8 +2198,8 @@ public Project createProject(String name, Integer width, Integer height) throws 
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        String userId = user.getId().toString();
-        File projectAudioDir = new File(baseDir, "audio" + File.separator + userId + File.separator + "projects" + File.separator + projectId);
+        // Updated path without userId
+        File projectAudioDir = new File(baseDir, "audio" + File.separator + "projects" + File.separator + projectId);
 
         if (!projectAudioDir.exists()) {
             boolean dirsCreated = projectAudioDir.mkdirs();
@@ -2376,7 +2213,8 @@ public Project createProject(String name, Integer width, Integer height) throws 
 
         audioFile.transferTo(destinationFile);
 
-        String relativePath = buildMediaPath("audio", userId, projectId, uniqueFileName);
+        // Updated relative path without userId
+        String relativePath = buildMediaPath("audio", projectId, uniqueFileName);
         try {
             addAudio(project, relativePath, audioFileName);
         } catch (JsonProcessingException e) {
