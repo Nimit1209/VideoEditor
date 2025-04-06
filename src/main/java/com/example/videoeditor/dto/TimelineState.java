@@ -3,19 +3,41 @@ package com.example.videoeditor.dto;
 import lombok.Data;
 
 import java.util.ArrayList;
-import java.util.List;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
-
+@Data
 public class TimelineState {
     private List<VideoSegment> segments;
     private List<TextSegment> textSegments;
     private Map<String, Object> metadata;
     private List<ImageSegment> imageSegments = new ArrayList<>();
-
     private List<AudioSegment> audioSegments = new ArrayList<>();
+    // ADDED: Top-level filters list
+    private List<Filter> filters = new ArrayList<>();
+    private Integer canvasWidth;
+    private Integer canvasHeight;
 
+    public TimelineState() {
+        this.segments = new ArrayList<>();
+        this.metadata = new HashMap<>();
+        this.textSegments = new ArrayList<>();
+    }
+
+    // ADDED: Getter and Setter for filters
+    public List<Filter> getFilters() {
+        if (filters == null) {
+            filters = new ArrayList<>();
+        }
+        return filters;
+    }
+
+    public void setFilters(List<Filter> filters) {
+        this.filters = filters != null ? new ArrayList<>(filters) : new ArrayList<>();
+    }
+
+    // Existing getters and setters
     public List<AudioSegment> getAudioSegments() {
         if (audioSegments == null) {
             audioSegments = new ArrayList<>();
@@ -27,26 +49,12 @@ public class TimelineState {
         this.audioSegments = audioSegments;
     }
 
-
-
-
-    //FOR IMAGE .............................................................................
     public List<ImageSegment> getImageSegments() {
         return imageSegments;
     }
 
     public void setImageSegments(List<ImageSegment> imageSegments) {
         this.imageSegments = imageSegments;
-    }
-    //................................................................................
-    // Assuming this is in a file like TimelineState.java
-    private Integer canvasWidth;
-    private Integer canvasHeight;
-
-    public TimelineState() {
-        this.segments = new ArrayList<>();
-        this.metadata = new HashMap<>();
-        this.textSegments = new ArrayList<>();
     }
 
     public Integer getCanvasWidth() {
@@ -76,7 +84,6 @@ public class TimelineState {
         this.textSegments = textSegments;
     }
 
-    // Getters and setters
     public List<VideoSegment> getSegments() {
         if (segments == null) {
             segments = new ArrayList<>();
@@ -87,6 +94,7 @@ public class TimelineState {
     public void setSegments(List<VideoSegment> segments) {
         this.segments = segments;
     }
+
     public Map<String, Object> getMetadata() {
         return metadata;
     }
@@ -95,7 +103,41 @@ public class TimelineState {
         this.metadata = metadata;
     }
 
-    // Add a method to get segments by layer
+    // ADDED: Method to sync legacyFilters for all segments
+    public void syncLegacyFilters() {
+        // Clear existing legacyFilters
+        for (VideoSegment segment : getSegments()) {
+            if (segment.getFiltersAsMap() == null) {
+                segment.setFiltersAsMap(new HashMap<>());
+            } else {
+                segment.getFiltersAsMap().clear();
+            }
+        }
+        for (ImageSegment segment : getImageSegments()) {
+            if (segment.getFiltersAsMap() == null) {
+                segment.setFiltersAsMap(new HashMap<>());
+            } else {
+                segment.getFiltersAsMap().clear();
+            }
+        }
+
+        // Populate legacyFilters from top-level filters
+        for (Filter filter : getFilters()) {
+            String filterValue = filter.getFilterValue() != null ? filter.getFilterValue() : "";
+            for (VideoSegment segment : getSegments()) {
+                if (segment.getId().equals(filter.getSegmentId())) {
+                    segment.getFiltersAsMap().put(filter.getFilterName(), filterValue);
+                }
+            }
+            for (ImageSegment segment : getImageSegments()) {
+                if (segment.getId().equals(filter.getSegmentId())) {
+                    segment.getFiltersAsMap().put(filter.getFilterName(), filterValue);
+                }
+            }
+        }
+    }
+
+    // Existing methods
     public List<VideoSegment> getSegmentsByLayer(int layer) {
         List<VideoSegment> layerSegments = new ArrayList<>();
         for (VideoSegment segment : segments) {
@@ -106,7 +148,6 @@ public class TimelineState {
         return layerSegments;
     }
 
-    // Add a method to get the maximum layer in the timeline
     public int getMaxLayer() {
         int maxLayer = 0;
         for (VideoSegment segment : segments) {
@@ -117,26 +158,21 @@ public class TimelineState {
         return maxLayer;
     }
 
-    // Add a method to validate timeline positions
     public boolean isTimelinePositionAvailable(double timelineStartTime, double timelineEndTime, int layer) {
         for (VideoSegment segment : segments) {
             if (segment.getLayer() == layer) {
-                // Check for overlap
                 if (timelineStartTime < segment.getTimelineEndTime() && timelineEndTime > segment.getTimelineStartTime()) {
-                    return false; // Overlap detected
-                }
-            }
-        }
-        // Check audio segments (negative layers)
-        for (AudioSegment segment : audioSegments) {
-            if (segment.getLayer() == layer && layer < 0) {
-                if (timelineStartTime < segment.getTimelineEndTime() &&
-                        timelineEndTime > segment.getTimelineStartTime()) {
                     return false;
                 }
             }
         }
-        return true; // No overlap
+        for (AudioSegment segment : audioSegments) {
+            if (segment.getLayer() == layer && layer < 0) {
+                if (timelineStartTime < segment.getTimelineEndTime() && timelineEndTime > segment.getTimelineStartTime()) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
-
 }

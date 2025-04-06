@@ -1,5 +1,6 @@
 package com.example.videoeditor.controller;
 
+import com.example.videoeditor.dto.Filter;
 import com.example.videoeditor.dto.ImageSegment;
 import com.example.videoeditor.dto.TimelineState;
 import com.example.videoeditor.dto.VideoSegment;
@@ -542,8 +543,7 @@ public class ProjectController {
             // Extract parameters
             String segmentId = (String) request.get("segmentId");
             String filterType = (String) request.get("filterType");
-            String filterValue = request.get("filterValue") != null ?
-                    request.get("filterValue").toString() : null;
+            String filterValue = request.get("filterValue") != null ? request.get("filterValue").toString() : null;
 
             // Validate parameters
             if (segmentId == null) {
@@ -553,37 +553,24 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Missing required parameter: filterType");
             }
 
-            // Get the timeline state
-            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
-
-            // Find the image segment
-            ImageSegment targetSegment = null;
-            for (ImageSegment segment : timelineState.getImageSegments()) {
-                if (segment.getId().equals(segmentId)) {
-                    targetSegment = segment;
-                    break;
-                }
-            }
-
-            if (targetSegment == null) {
-                return ResponseEntity.badRequest().body("Image segment not found: " + segmentId);
-            }
-
-            // Apply or remove filter
+            // Use VideoEditingService to apply or remove the filter
             if (filterValue == null) {
-                targetSegment.removeFilter(filterType);
+                // If filterValue is null, remove the filter (find filterId dynamically if needed)
+                TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+                Filter targetFilter = timelineState.getFilters().stream()
+                        .filter(f -> f.getSegmentId().equals(segmentId) && f.getFilterName().equals(filterType))
+                        .findFirst()
+                        .orElse(null);
+                if (targetFilter != null) {
+                    videoEditingService.removeFilter(sessionId, segmentId, targetFilter.getFilterId());
+                } else {
+                    return ResponseEntity.badRequest().body("Filter " + filterType + " not found for segment: " + segmentId);
+                }
             } else {
-                targetSegment.addFilter(filterType, filterValue);
+                // Apply the filter
+                videoEditingService.applyFilter(sessionId, segmentId, filterType, filterValue);
             }
 
-            Map<String, Object> params = new HashMap<>();
-            params.put("imageSegmentId", segmentId);
-            params.put("time", System.currentTimeMillis());
-            params.put("filterType", filterType);
-            params.put("filterValue", filterValue);
-
-            // Save the updated timeline state
-            videoEditingService.saveTimelineState(sessionId, timelineState);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -648,4 +635,106 @@ public class ProjectController {
         if (filename.endsWith(".webp")) return "image/webp";
         return "application/octet-stream"; // Default fallback
     }
+
+    @PostMapping("/{projectId}/apply-filter")
+    public ResponseEntity<?> applyFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String segmentId = (String) request.get("segmentId");
+            String filterName = (String) request.get("filterName");
+            String filterValue = request.get("filterValue") != null ? request.get("filterValue").toString() : null;
+
+            if (segmentId == null || filterName == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: segmentId, filterName");
+            }
+
+            videoEditingService.applyFilter(sessionId, segmentId, filterName, filterValue);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error applying filter: " + e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/{projectId}/remove-filter")
+    public ResponseEntity<?> removeFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestParam String filterId,
+            @RequestParam String segmentId) {
+        try {
+            User user = getUserFromToken(token);
+
+            if (filterId == null || segmentId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: filterId, segmentId");
+            }
+
+            videoEditingService.removeFilter(sessionId, segmentId, filterId);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error removing filter: " + e.getMessage());
+        }
+    }
+
+    // Delete Video Segment from Timeline
+    @DeleteMapping("/timeline/video/{sessionId}/{segmentId}")
+    public ResponseEntity<String> deleteVideoFromTimeline(
+            @PathVariable String sessionId,
+            @PathVariable String segmentId) {
+        try {
+            videoEditingService.deleteVideoFromTimeline(sessionId, segmentId);
+            return ResponseEntity.ok("Video segment deleted successfully");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    // Delete Image Segment from Timeline
+    @DeleteMapping("/timeline/image/{sessionId}/{imageId}")
+    public ResponseEntity<String> deleteImageFromTimeline(
+            @PathVariable String sessionId,
+            @PathVariable String imageId) {
+        try {
+            videoEditingService.deleteImageFromTimeline(sessionId, imageId);
+            return ResponseEntity.ok("Image segment deleted successfully");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    // Delete Audio Segment from Timeline
+    @DeleteMapping("/timeline/audio/{sessionId}/{audioId}")
+    public ResponseEntity<String> deleteAudioFromTimeline(
+            @PathVariable String sessionId,
+            @PathVariable String audioId) {
+        try {
+            videoEditingService.deleteAudioFromTimeline(sessionId, audioId);
+            return ResponseEntity.ok("Audio segment deleted successfully");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    // Delete Text Segment from Timeline
+    @DeleteMapping("/timeline/text/{sessionId}/{textId}")
+    public ResponseEntity<String> deleteTextFromTimeline(
+            @RequestHeader("Authorization") String token,
+            @PathVariable String sessionId,
+            @PathVariable String textId) {
+        try {
+            User user = getUserFromToken(token); // Authenticate user
+            videoEditingService.deleteTextFromTimeline(sessionId, textId);
+            return ResponseEntity.ok("Text segment deleted successfully");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
 }

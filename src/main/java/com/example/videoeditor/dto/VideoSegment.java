@@ -1,80 +1,30 @@
 package com.example.videoeditor.dto;
 
 import lombok.Data;
-
-import java.util.LinkedHashMap; // CHANGED: Using LinkedHashMap for order preservation
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 @Data
 public class VideoSegment {
+    private String id = UUID.randomUUID().toString();
     private String sourceVideoPath;
     private double startTime;
     private double endTime;
-    private String id;
+    private int positionX;
+    private int positionY;
+    private double scale;
+    private int layer;
+    private double timelineStartTime;
+    private double timelineEndTime;
+    private Map<String, String> filtersAsMap = new HashMap<>(); // Revert to Map<String, String>
 
-    private Integer positionX = 0;
-    private Integer positionY = 0;
-    private Double scale = 1.0;
-
-    private Integer layer = 0;     // Layer of the segment (for multi-level timelines)
-    private double timelineStartTime; // Start time of the segment in the timeline (in seconds)
-    private double timelineEndTime;   // End time of the segment in the timeline (in seconds)
-
-    // CHANGED: Changed HashMap to LinkedHashMap to preserve filter application order
-    private Map<String, Map<String, Object>> filters;
-
-    public VideoSegment() {
-        this.id = UUID.randomUUID().toString(); // Generate unique ID on creation
-        this.filters = new LinkedHashMap<>(); // CHANGED: Initialized as LinkedHashMap
+    public String getId() {
+        return id;
     }
 
-    public Integer getLayer() {
-        return layer;
-    }
-
-    public void setLayer(Integer layer) {
-        this.layer = layer;
-    }
-
-    public double getTimelineStartTime() {
-        return timelineStartTime;
-    }
-
-    public void setTimelineStartTime(double timelineStartTime) {
-        this.timelineStartTime = timelineStartTime;
-    }
-
-    public double getTimelineEndTime() {
-        return timelineEndTime;
-    }
-
-    public void setTimelineEndTime(double timelineEndTime) {
-        this.timelineEndTime = timelineEndTime;
-    }
-
-    public Integer getPositionX() {
-        return positionX;
-    }
-
-    public void setPositionX(Integer positionX) {
-        this.positionX = positionX;
-    }
-
-    public Integer getPositionY() {
-        return positionY;
-    }
-
-    public void setPositionY(Integer positionY) {
-        this.positionY = positionY;
-    }
-
-    public Double getScale() {
-        return scale;
-    }
-
-    public void setScale(Double scale) {
-        this.scale = scale;
+    public void setId(String id) {
+        this.id = id;
     }
 
     public String getSourceVideoPath() {
@@ -101,20 +51,59 @@ public class VideoSegment {
         this.endTime = endTime;
     }
 
-    public String getId() {
-        return id;
+    public int getPositionX() {
+        return positionX;
     }
 
-    public void setId(String id) {
-        this.id = id;
+    public void setPositionX(int positionX) {
+        this.positionX = positionX;
     }
 
-    // Getter and setter already present, no change needed
-    public Map<String, Map<String, Object>> getFilters() {
-        return filters;
+    public int getPositionY() {
+        return positionY;
     }
 
-    public void setFilters(Map<String, Map<String, Object>> filters) {
-        this.filters = filters;
+    public void setPositionY(int positionY) {
+        this.positionY = positionY;
+    }
+
+    public double getScale() {
+        return scale;
+    }
+
+    public void setScale(double scale) {
+        this.scale = scale;
+    }
+
+    public int getLayer() {
+        return layer;
+    }
+
+    public void setLayer(int layer) {
+        this.layer = layer;
+    }
+
+    public double getTimelineStartTime() {
+        return timelineStartTime;
+    }
+
+    public void setTimelineStartTime(double timelineStartTime) {
+        this.timelineStartTime = timelineStartTime;
+    }
+
+    public double getTimelineEndTime() {
+        return timelineEndTime;
+    }
+
+    public void setTimelineEndTime(double timelineEndTime) {
+        this.timelineEndTime = timelineEndTime;
+    }
+
+    public Map<String, String> getFiltersAsMap() {
+        return filtersAsMap;
+    }
+
+    public void setFiltersAsMap(Map<String, String> filtersAsMap) {
+        this.filtersAsMap = filtersAsMap;
     }
 }
