@@ -23,16 +23,6 @@ public class ImageSegment {
     // Keyframes for animatable properties
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
 
-    private Map<String, String> filtersAsMap = new HashMap<>();
-
-    public Map<String, String> getFiltersAsMap() {
-        return filtersAsMap;
-    }
-
-    public void setFiltersAsMap(Map<String, String> filtersAsMap) {
-        this.filtersAsMap = filtersAsMap;
-    }
-
     public Map<String, List<Keyframe>> getKeyframes() {
         return keyframes;
     }

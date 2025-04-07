@@ -13,23 +13,71 @@ public class TimelineState {
     private List<AudioSegment> audioSegments = new ArrayList<>();
     private List<ImageSegment> imageSegments = new ArrayList<>();
     private List<Filter> filters = new ArrayList<>();
-    public Map<String, Object> getMetadata() {
-        return metadata;
-    }
-    public List<ImageSegment> getImageSegments() {
-        return imageSegments;
-    }
     private Integer canvasWidth;
     private Integer canvasHeight;
-
-    public void setImageSegments(List<ImageSegment> imageSegments) {
-        this.imageSegments = imageSegments;
-    }
 
     public TimelineState() {
         this.segments = new ArrayList<>();
         this.metadata = new HashMap<>();
         this.textSegments = new ArrayList<>();
+    }
+
+    // Getters and setters (unchanged)
+    public List<VideoSegment> getSegments() {
+        if (segments == null) {
+            segments = new ArrayList<>();
+        }
+        return segments;
+    }
+
+    public void setSegments(List<VideoSegment> segments) {
+        this.segments = segments;
+    }
+
+    public List<TextSegment> getTextSegments() {
+        if (textSegments == null) {
+            textSegments = new ArrayList<>();
+        }
+        return textSegments;
+    }
+
+    public void setTextSegments(List<TextSegment> textSegments) {
+        this.textSegments = textSegments;
+    }
+
+    public Map<String, Object> getMetadata() {
+        return metadata;
+    }
+
+    public void setMetadata(Map<String, Object> metadata) {
+        this.metadata = metadata;
+    }
+
+    public Long getLastModified() {
+        return lastModified;
+    }
+
+    public void setLastModified(Long lastModified) {
+        this.lastModified = lastModified;
+    }
+
+    public List<AudioSegment> getAudioSegments() {
+        if (audioSegments == null) {
+            audioSegments = new ArrayList<>();
+        }
+        return audioSegments;
+    }
+
+    public void setAudioSegments(List<AudioSegment> audioSegments) {
+        this.audioSegments = audioSegments;
+    }
+
+    public List<ImageSegment> getImageSegments() {
+        return imageSegments;
+    }
+
+    public void setImageSegments(List<ImageSegment> imageSegments) {
+        this.imageSegments = imageSegments;
     }
 
     public List<Filter> getFilters() {
@@ -56,34 +104,6 @@ public class TimelineState {
         this.canvasHeight = canvasHeight;
     }
 
-    public List<TextSegment> getTextSegments() {
-        if (textSegments == null) {
-            textSegments = new ArrayList<>();
-        }
-        return textSegments;
-    }
-
-    public void setTextSegments(List<TextSegment> textSegments) {
-        this.textSegments = textSegments;
-    }
-
-    // Getters and setters
-    public List<VideoSegment> getSegments() {
-        if (segments == null) {
-            segments = new ArrayList<>();
-        }
-        return segments;
-    }
-
-    public void setSegments(List<VideoSegment> segments) {
-        this.segments = segments;
-    }
-
-    public void setMetadata(Map<String, Object> metadata) {
-        this.metadata = metadata;
-    }
-
-    // Add a method to get segments by layer
     public List<VideoSegment> getSegmentsByLayer(int layer) {
         List<VideoSegment> layerSegments = new ArrayList<>();
         for (VideoSegment segment : segments) {
@@ -94,7 +114,6 @@ public class TimelineState {
         return layerSegments;
     }
 
-    // Add a method to get the maximum layer in the timeline
     public int getMaxLayer() {
         int maxLayer = 0;
         for (VideoSegment segment : segments) {
@@ -105,9 +124,7 @@ public class TimelineState {
         return maxLayer;
     }
 
-    // Add this method to your TimelineState class
     public boolean isTimelinePositionAvailable(double startTime, double endTime, int layer) {
-        // Check for video segment overlaps
         for (VideoSegment segment : segments) {
             if (segment.getLayer() == layer &&
                     startTime < segment.getTimelineEndTime() &&
@@ -115,8 +132,6 @@ public class TimelineState {
                 return false;
             }
         }
-
-        // Check for text segment overlaps
         for (TextSegment segment : textSegments) {
             if (segment.getLayer() == layer &&
                     startTime < segment.getTimelineEndTime() &&
@@ -124,8 +139,6 @@ public class TimelineState {
                 return false;
             }
         }
-
-        // Check audio segments (negative layers)
         for (AudioSegment segment : audioSegments) {
             if (segment.getLayer() == layer && layer < 0) {
                 if (startTime < segment.getTimelineEndTime() &&
@@ -134,59 +147,6 @@ public class TimelineState {
                 }
             }
         }
-        return true; // No overlap
-    }
-
-    public Long getLastModified() {
-        return lastModified;
-    }
-
-    public void setLastModified(Long lastModified) {
-        this.lastModified = lastModified;
-    }
-
-    public List<AudioSegment> getAudioSegments() {
-        if (audioSegments == null) {
-            audioSegments = new ArrayList<>();
-        }
-        return audioSegments;
-    }
-
-    public void setAudioSegments(List<AudioSegment> audioSegments) {
-        this.audioSegments = audioSegments;
-    }
-
-    // ADDED: Method to sync legacyFilters for all segments
-    public void syncLegacyFilters() {
-        // Clear existing legacyFilters
-        for (VideoSegment segment : getSegments()) {
-            if (segment.getFiltersAsMap() == null) {
-                segment.setFiltersAsMap(new HashMap<>());
-            } else {
-                segment.getFiltersAsMap().clear();
-            }
-        }
-        for (ImageSegment segment : getImageSegments()) {
-            if (segment.getFiltersAsMap() == null) {
-                segment.setFiltersAsMap(new HashMap<>());
-            } else {
-                segment.getFiltersAsMap().clear();
-            }
-        }
-
-        // Populate legacyFilters from top-level filters
-        for (Filter filter : getFilters()) {
-            String filterValue = filter.getFilterValue() != null ? filter.getFilterValue() : "";
-            for (VideoSegment segment : getSegments()) {
-                if (segment.getId().equals(filter.getSegmentId())) {
-                    segment.getFiltersAsMap().put(filter.getFilterName(), filterValue);
-                }
-            }
-            for (ImageSegment segment : getImageSegments()) {
-                if (segment.getId().equals(filter.getSegmentId())) {
-                    segment.getFiltersAsMap().put(filter.getFilterName(), filterValue);
-                }
-            }
-        }
+        return true;
     }
 }

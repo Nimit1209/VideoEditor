@@ -28,7 +28,9 @@ public class VideoEditingService {
     private final ObjectMapper objectMapper;
     private final Map<String, EditSession> activeSessions;
     private final String ffmpegPath = "/usr/local/bin/ffmpeg";
+//    private final String ffmpegPath = ""
     private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
+//    private final String baseDir = "C:\\Users\\nimit.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build.7z\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffmpeg.exe"
     public VideoEditingService(ProjectRepository projectRepository, EditedVideoRepository editedVideoRepository,
                 ObjectMapper objectMapper) {
             this.projectRepository = projectRepository;
@@ -960,160 +962,155 @@ public class VideoEditingService {
             addImageToTimeline(sessionId, imagePath, layer, timelineStartTime, timelineEndTime, positionX, positionY, scale, null);
         }
 
-        public void addImageToTimeline(
-                String sessionId,
-                String imagePath,
-                int layer,
-                double timelineStartTime,
-                Double timelineEndTime,
-                Integer positionX,
-                Integer positionY,
-                Double scale,
-                Map<String, String> filters // Optional filters
-        ) {
-            TimelineState timelineState = getTimelineState(sessionId);
+    public void addImageToTimeline(
+            String sessionId,
+            String imagePath,
+            int layer,
+            double timelineStartTime,
+            Double timelineEndTime,
+            Integer positionX,
+            Integer positionY,
+            Double scale,
+            Map<String, String> filters // Optional filters
+    ) {
+        TimelineState timelineState = getTimelineState(sessionId);
 
-            ImageSegment imageSegment = new ImageSegment();
-            imageSegment.setId(UUID.randomUUID().toString());
-            imageSegment.setImagePath(imagePath);
-            imageSegment.setLayer(layer);
-            imageSegment.setPositionX(positionX != null ? positionX : 0);
-            imageSegment.setPositionY(positionY != null ? positionY : 0);
-            imageSegment.setScale(scale != null ? scale : 1.0);
-            imageSegment.setTimelineStartTime(timelineStartTime);
-            imageSegment.setTimelineEndTime(timelineEndTime == null ? timelineStartTime + 5.0 : timelineEndTime);
+        ImageSegment imageSegment = new ImageSegment();
+        imageSegment.setId(UUID.randomUUID().toString());
+        imageSegment.setImagePath(imagePath);
+        imageSegment.setLayer(layer);
+        imageSegment.setPositionX(positionX != null ? positionX : 0);
+        imageSegment.setPositionY(positionY != null ? positionY : 0);
+        imageSegment.setScale(scale != null ? scale : 1.0);
+        imageSegment.setTimelineStartTime(timelineStartTime);
+        imageSegment.setTimelineEndTime(timelineEndTime == null ? timelineStartTime + 5.0 : timelineEndTime);
 
-            try {
-                File imageFile = new File(baseDir + "\\" + imagePath);
-                if (!imageFile.exists()) {
-                    throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
-                }
-                BufferedImage img = ImageIO.read(imageFile);
-                imageSegment.setWidth(img.getWidth());
-                imageSegment.setHeight(img.getHeight());
-            } catch (IOException e) {
-                throw new RuntimeException("Error reading image file: " + e.getMessage());
+        try {
+            File imageFile = new File(baseDir + "\\" + imagePath);
+            if (!imageFile.exists()) {
+                throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
             }
+            BufferedImage img = ImageIO.read(imageFile);
+            imageSegment.setWidth(img.getWidth());
+            imageSegment.setHeight(img.getHeight());
+        } catch (IOException e) {
+            throw new RuntimeException("Error reading image file: " + e.getMessage());
+        }
 
+        if (filters != null && !filters.isEmpty()) {
+            for (Map.Entry<String, String> entry : filters.entrySet()) {
+                Filter filter = new Filter();
+                filter.setSegmentId(imageSegment.getId());
+                filter.setFilterName(entry.getKey());
+                filter.setFilterValue(entry.getValue());
+                timelineState.getFilters().add(filter);
+            }
+        }
+
+        timelineState.getImageSegments().add(imageSegment);
+        // Removed: timelineState.syncLegacyFilters();
+        saveTimelineState(sessionId, timelineState);
+    }
+
+    public void updateImageSegment(
+            String sessionId,
+            String imageSegmentId,
+            Integer positionX,
+            Integer positionY,
+            Double scale,
+            Double opacity,
+            Integer layer,
+            Integer customWidth,
+            Integer customHeight,
+            Boolean maintainAspectRatio,
+            Map<String, String> filters,
+            List<String> filtersToRemove,
+            Double timelineStartTime,
+            Double timelineEndTime,
+            Map<String, List<Keyframe>> keyframes) {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = getTimelineState(sessionId);
+
+        ImageSegment targetSegment = null;
+        for (ImageSegment segment : timelineState.getImageSegments()) {
+            if (segment.getId().equals(imageSegmentId)) {
+                targetSegment = segment;
+                break;
+            }
+        }
+
+        if (targetSegment == null) {
+            throw new RuntimeException("Image segment not found: " + imageSegmentId);
+        }
+
+        if (keyframes != null && !keyframes.isEmpty()) {
+            for (Map.Entry<String, List<Keyframe>> entry : keyframes.entrySet()) {
+                String property = entry.getKey();
+                List<Keyframe> kfs = entry.getValue();
+                for (Keyframe kf : kfs) {
+                    if (kf.getTime() < 0 || kf.getTime() > (targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime())) {
+                        throw new IllegalArgumentException("Keyframe time out of segment bounds for property " + property);
+                    }
+                    targetSegment.addKeyframe(property, kf);
+                }
+                switch (property) {
+                    case "positionX": targetSegment.setPositionX(null); break;
+                    case "positionY": targetSegment.setPositionY(null); break;
+                    case "scale": targetSegment.setScale(null); break;
+                }
+            }
+        } else {
+            if (positionX != null) targetSegment.setPositionX(positionX);
+            if (positionY != null) targetSegment.setPositionY(positionY);
+            if (scale != null) targetSegment.setScale(scale);
+            if (opacity != null) targetSegment.setOpacity(opacity);
+            if (layer != null) targetSegment.setLayer(layer);
+            if (customWidth != null) targetSegment.setCustomWidth(customWidth);
+            if (customHeight != null) targetSegment.setCustomHeight(customHeight);
+            if (maintainAspectRatio != null) targetSegment.setMaintainAspectRatio(maintainAspectRatio);
+            if (timelineStartTime != null) targetSegment.setTimelineStartTime(timelineStartTime);
+            if (timelineEndTime != null) targetSegment.setTimelineEndTime(timelineEndTime);
             if (filters != null && !filters.isEmpty()) {
-                for (Map.Entry<String, String> entry : filters.entrySet()) {
-                    Filter filter = new Filter();
-                    filter.setSegmentId(imageSegment.getId());
-                    filter.setFilterName(entry.getKey());
-                    filter.setFilterValue(entry.getValue());
-                    timelineState.getFilters().add(filter);
-                }
-            }
-
-            timelineState.getImageSegments().add(imageSegment);
-            timelineState.syncLegacyFilters();
-            saveTimelineState(sessionId, timelineState);
-        }
-
-        public void updateImageSegment(
-                String sessionId,
-                String imageSegmentId,
-                Integer positionX,
-                Integer positionY,
-                Double scale,
-                Double opacity,
-                Integer layer,
-                Integer customWidth,
-                Integer customHeight,
-                Boolean maintainAspectRatio,
-                Map<String, String> filters,
-                List<String> filtersToRemove,
-                Double timelineStartTime,
-                Double timelineEndTime,
-                Map<String, List<Keyframe>> keyframes) {
-            EditSession session = getSession(sessionId);
-            TimelineState timelineState = getTimelineState(sessionId);
-
-            ImageSegment targetSegment = null;
-            for (ImageSegment segment : timelineState.getImageSegments()) {
-                if (segment.getId().equals(imageSegmentId)) {
-                    targetSegment = segment;
-                    break;
-                }
-            }
-
-            if (targetSegment == null) {
-                throw new RuntimeException("Image segment not found: " + imageSegmentId);
-            }
-
-            // Handle keyframes if provided
-            if (keyframes != null && !keyframes.isEmpty()) {
-                for (Map.Entry<String, List<Keyframe>> entry : keyframes.entrySet()) {
-                    String property = entry.getKey();
-                    List<Keyframe> kfs = entry.getValue();
-                    for (Keyframe kf : kfs) {
-                        if (kf.getTime() < 0 || kf.getTime() > (targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime())) {
-                            throw new IllegalArgumentException("Keyframe time out of segment bounds for property " + property);
-                        }
-                        targetSegment.addKeyframe(property, kf); // Overrides existing keyframe at the same time
-                    }
-                    // Set static value to null if keyframes are provided for that property
-                    switch (property) {
-                        case "positionX": targetSegment.setPositionX(null); break;
-                        case "positionY": targetSegment.setPositionY(null); break;
-                        case "scale": targetSegment.setScale(null); break;
-                    }
-                }
-            } else {
-                // Update static properties if no keyframes
-                if (positionX != null) targetSegment.setPositionX(positionX);
-                if (positionY != null) targetSegment.setPositionY(positionY);
-                if (scale != null) targetSegment.setScale(scale);
-                if (opacity != null) targetSegment.setOpacity(opacity);
-                if (layer != null) targetSegment.setLayer(layer);
-                if (customWidth != null) targetSegment.setCustomWidth(customWidth);
-                if (customHeight != null) targetSegment.setCustomHeight(customHeight);
-                if (maintainAspectRatio != null) targetSegment.setMaintainAspectRatio(maintainAspectRatio);
-                if (timelineStartTime != null) targetSegment.setTimelineStartTime(timelineStartTime);
-                if (timelineEndTime != null) targetSegment.setTimelineEndTime(timelineEndTime);
-                if (filters != null && !filters.isEmpty()) {
-                    for (Map.Entry<String, String> filter : filters.entrySet()) {
-                        Filter newFilter = new Filter();
-                        newFilter.setSegmentId(targetSegment.getId());
-                        newFilter.setFilterName(filter.getKey());
-                        newFilter.setFilterValue(filter.getValue());
-                        String segmentId = targetSegment.getId();
-                        timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && f.getFilterName().equals(filter.getKey()));
-                        timelineState.getFilters().add(newFilter);
-                    }
-                }
-
-                if (filtersToRemove != null && !filtersToRemove.isEmpty()) {
+                for (Map.Entry<String, String> filter : filters.entrySet()) {
+                    Filter newFilter = new Filter();
+                    newFilter.setSegmentId(targetSegment.getId());
+                    newFilter.setFilterName(filter.getKey());
+                    newFilter.setFilterValue(filter.getValue());
                     String segmentId = targetSegment.getId();
-                    List<String> filtersToRemoveFinal = new ArrayList<>(filtersToRemove);
-                    timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && filtersToRemoveFinal.contains(f.getFilterId()));
+                    timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && f.getFilterName().equals(filter.getKey()));
+                    timelineState.getFilters().add(newFilter);
                 }
-
-                timelineState.syncLegacyFilters();
-                session.setLastAccessTime(System.currentTimeMillis());
             }
-
-            saveTimelineState(sessionId, timelineState);
-        }
-
-        public void removeImageSegment(String sessionId, String segmentId) {
-            EditSession session = getSession(sessionId);
-            TimelineState timelineState = getTimelineState(sessionId);
-
-            boolean removed = timelineState.getImageSegments().removeIf(
-                    segment -> segment.getId().equals(segmentId)
-            );
-
-            if (!removed) {
-                throw new RuntimeException("Image segment not found with ID: " + segmentId);
+            if (filtersToRemove != null && !filtersToRemove.isEmpty()) {
+                String segmentId = targetSegment.getId();
+                List<String> filtersToRemoveFinal = new ArrayList<>(filtersToRemove);
+                timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && filtersToRemoveFinal.contains(f.getFilterId()));
             }
-
-            timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId));
-            timelineState.syncLegacyFilters();
             session.setLastAccessTime(System.currentTimeMillis());
-
-            saveTimelineState(sessionId, timelineState);
         }
+
+        // Removed: timelineState.syncLegacyFilters();
+        saveTimelineState(sessionId, timelineState);
+    }
+
+    public void removeImageSegment(String sessionId, String segmentId) {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = getTimelineState(sessionId);
+
+        boolean removed = timelineState.getImageSegments().removeIf(
+                segment -> segment.getId().equals(segmentId)
+        );
+
+        if (!removed) {
+            throw new RuntimeException("Image segment not found with ID: " + segmentId);
+        }
+
+        timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId));
+        // Removed: timelineState.syncLegacyFilters();
+        session.setLastAccessTime(System.currentTimeMillis());
+
+        saveTimelineState(sessionId, timelineState);
+    }
 
         public void saveTimelineState(String sessionId, TimelineState timelineState) {
             EditSession session = activeSessions.get(sessionId);
@@ -1874,52 +1871,52 @@ public class VideoEditingService {
             return defaultFontPath;
         }
 
-        public void applyFilter(String sessionId, String segmentId, String filterName, String filterValue) {
-            EditSession session = getSession(sessionId);
-            TimelineState timelineState = session.getTimelineState();
+    public void applyFilter(String sessionId, String segmentId, String filterName, String filterValue) {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
 
-            boolean segmentExists = false;
-            for (VideoSegment segment : timelineState.getSegments()) {
+        boolean segmentExists = false;
+        for (VideoSegment segment : timelineState.getSegments()) {
+            if (segment.getId().equals(segmentId)) {
+                segmentExists = true;
+                break;
+            }
+        }
+        if (!segmentExists) {
+            for (ImageSegment segment : timelineState.getImageSegments()) {
                 if (segment.getId().equals(segmentId)) {
                     segmentExists = true;
                     break;
                 }
             }
-            if (!segmentExists) {
-                for (ImageSegment segment : timelineState.getImageSegments()) {
-                    if (segment.getId().equals(segmentId)) {
-                        segmentExists = true;
-                        break;
-                    }
-                }
-            }
-            if (!segmentExists) {
-                throw new RuntimeException("Segment not found with ID: " + segmentId);
-            }
-
-            Filter filter = new Filter();
-            filter.setSegmentId(segmentId);
-            filter.setFilterName(filterName);
-            filter.setFilterValue(filterValue);
-            timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && f.getFilterName().equals(filterName));
-            timelineState.getFilters().add(filter);
-
-            timelineState.syncLegacyFilters();
-            session.setLastAccessTime(System.currentTimeMillis());
+        }
+        if (!segmentExists) {
+            throw new RuntimeException("Segment not found with ID: " + segmentId);
         }
 
-        public void removeFilter(String sessionId, String segmentId, String filterId) {
-            EditSession session = getSession(sessionId);
-            TimelineState timelineState = session.getTimelineState();
+        Filter filter = new Filter();
+        filter.setSegmentId(segmentId);
+        filter.setFilterName(filterName);
+        filter.setFilterValue(filterValue);
+        timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && f.getFilterName().equals(filterName));
+        timelineState.getFilters().add(filter);
 
-            boolean removed = timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && f.getFilterId().equals(filterId));
-            if (!removed) {
-                throw new RuntimeException("Filter not found with ID: " + filterId + " for segment: " + segmentId);
-            }
+        // Removed: timelineState.syncLegacyFilters();
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
 
-            timelineState.syncLegacyFilters();
-            session.setLastAccessTime(System.currentTimeMillis());
+    public void removeFilter(String sessionId, String segmentId, String filterId) {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
+
+        boolean removed = timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId) && f.getFilterId().equals(filterId));
+        if (!removed) {
+            throw new RuntimeException("Filter not found with ID: " + filterId + " for segment: " + segmentId);
         }
+
+        // Removed: timelineState.syncLegacyFilters();
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
 
         private String generateVideoFilters(VideoSegment segment, TimelineState timelineState) {
             StringBuilder filterStr = new StringBuilder();
@@ -2225,9 +2222,8 @@ public class VideoEditingService {
                 throw new RuntimeException("Video segment not found with ID: " + segmentId);
             }
 
-            // Remove associated filters
             timelineState.getFilters().removeIf(filter -> filter.getSegmentId().equals(segmentId));
-            timelineState.syncLegacyFilters();
+            // Removed: timelineState.syncLegacyFilters();
             session.setLastAccessTime(System.currentTimeMillis());
         }
 
@@ -2241,9 +2237,8 @@ public class VideoEditingService {
                 throw new RuntimeException("Image segment not found with ID: " + imageId);
             }
 
-            // Remove associated filters
             timelineState.getFilters().removeIf(filter -> filter.getSegmentId().equals(imageId));
-            timelineState.syncLegacyFilters();
+            // Removed: timelineState.syncLegacyFilters();
             session.setLastAccessTime(System.currentTimeMillis());
         }
 
@@ -2274,3 +2269,4 @@ public class VideoEditingService {
         }
 
     }
+

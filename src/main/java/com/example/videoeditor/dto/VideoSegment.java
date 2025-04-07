@@ -21,17 +21,6 @@ public class VideoSegment {
 
     // Keyframes for animatable properties
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
-
-    private Map<String, String> filtersAsMap = new HashMap<>();
-
-    public Map<String, String> getFiltersAsMap() {
-        return filtersAsMap;
-    }
-
-    public void setFiltersAsMap(Map<String, String> filtersAsMap) {
-        this.filtersAsMap = filtersAsMap;
-    }
-
     public VideoSegment() {
         this.id = UUID.randomUUID().toString();
     }
