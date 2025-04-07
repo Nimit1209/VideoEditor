@@ -1,23 +1,30 @@
 package com.example.videoeditor.dto;
 
-import lombok.Data;
-
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 
-@Data
 public class TimelineState {
     private List<VideoSegment> segments;
     private List<TextSegment> textSegments;
     private Map<String, Object> metadata;
-    private List<ImageSegment> imageSegments = new ArrayList<>();
+    private Long lastModified;
     private List<AudioSegment> audioSegments = new ArrayList<>();
-    // ADDED: Top-level filters list
+    private List<ImageSegment> imageSegments = new ArrayList<>();
     private List<Filter> filters = new ArrayList<>();
+    public Map<String, Object> getMetadata() {
+        return metadata;
+    }
+    public List<ImageSegment> getImageSegments() {
+        return imageSegments;
+    }
     private Integer canvasWidth;
     private Integer canvasHeight;
+
+    public void setImageSegments(List<ImageSegment> imageSegments) {
+        this.imageSegments = imageSegments;
+    }
 
     public TimelineState() {
         this.segments = new ArrayList<>();
@@ -25,36 +32,12 @@ public class TimelineState {
         this.textSegments = new ArrayList<>();
     }
 
-    // ADDED: Getter and Setter for filters
     public List<Filter> getFilters() {
-        if (filters == null) {
-            filters = new ArrayList<>();
-        }
         return filters;
     }
 
     public void setFilters(List<Filter> filters) {
-        this.filters = filters != null ? new ArrayList<>(filters) : new ArrayList<>();
-    }
-
-    // Existing getters and setters
-    public List<AudioSegment> getAudioSegments() {
-        if (audioSegments == null) {
-            audioSegments = new ArrayList<>();
-        }
-        return audioSegments;
-    }
-
-    public void setAudioSegments(List<AudioSegment> audioSegments) {
-        this.audioSegments = audioSegments;
-    }
-
-    public List<ImageSegment> getImageSegments() {
-        return imageSegments;
-    }
-
-    public void setImageSegments(List<ImageSegment> imageSegments) {
-        this.imageSegments = imageSegments;
+        this.filters = filters;
     }
 
     public Integer getCanvasWidth() {
@@ -84,6 +67,7 @@ public class TimelineState {
         this.textSegments = textSegments;
     }
 
+    // Getters and setters
     public List<VideoSegment> getSegments() {
         if (segments == null) {
             segments = new ArrayList<>();
@@ -95,12 +79,81 @@ public class TimelineState {
         this.segments = segments;
     }
 
-    public Map<String, Object> getMetadata() {
-        return metadata;
-    }
-
     public void setMetadata(Map<String, Object> metadata) {
         this.metadata = metadata;
+    }
+
+    // Add a method to get segments by layer
+    public List<VideoSegment> getSegmentsByLayer(int layer) {
+        List<VideoSegment> layerSegments = new ArrayList<>();
+        for (VideoSegment segment : segments) {
+            if (segment.getLayer() == layer) {
+                layerSegments.add(segment);
+            }
+        }
+        return layerSegments;
+    }
+
+    // Add a method to get the maximum layer in the timeline
+    public int getMaxLayer() {
+        int maxLayer = 0;
+        for (VideoSegment segment : segments) {
+            if (segment.getLayer() > maxLayer) {
+                maxLayer = segment.getLayer();
+            }
+        }
+        return maxLayer;
+    }
+
+    // Add this method to your TimelineState class
+    public boolean isTimelinePositionAvailable(double startTime, double endTime, int layer) {
+        // Check for video segment overlaps
+        for (VideoSegment segment : segments) {
+            if (segment.getLayer() == layer &&
+                    startTime < segment.getTimelineEndTime() &&
+                    endTime > segment.getTimelineStartTime()) {
+                return false;
+            }
+        }
+
+        // Check for text segment overlaps
+        for (TextSegment segment : textSegments) {
+            if (segment.getLayer() == layer &&
+                    startTime < segment.getTimelineEndTime() &&
+                    endTime > segment.getTimelineStartTime()) {
+                return false;
+            }
+        }
+
+        // Check audio segments (negative layers)
+        for (AudioSegment segment : audioSegments) {
+            if (segment.getLayer() == layer && layer < 0) {
+                if (startTime < segment.getTimelineEndTime() &&
+                        endTime > segment.getTimelineStartTime()) {
+                    return false;
+                }
+            }
+        }
+        return true; // No overlap
+    }
+
+    public Long getLastModified() {
+        return lastModified;
+    }
+
+    public void setLastModified(Long lastModified) {
+        this.lastModified = lastModified;
+    }
+
+    public List<AudioSegment> getAudioSegments() {
+        if (audioSegments == null) {
+            audioSegments = new ArrayList<>();
+        }
+        return audioSegments;
+    }
+
+    public void setAudioSegments(List<AudioSegment> audioSegments) {
+        this.audioSegments = audioSegments;
     }
 
     // ADDED: Method to sync legacyFilters for all segments
@@ -135,44 +188,5 @@ public class TimelineState {
                 }
             }
         }
-    }
-
-    // Existing methods
-    public List<VideoSegment> getSegmentsByLayer(int layer) {
-        List<VideoSegment> layerSegments = new ArrayList<>();
-        for (VideoSegment segment : segments) {
-            if (segment.getLayer() == layer) {
-                layerSegments.add(segment);
-            }
-        }
-        return layerSegments;
-    }
-
-    public int getMaxLayer() {
-        int maxLayer = 0;
-        for (VideoSegment segment : segments) {
-            if (segment.getLayer() > maxLayer) {
-                maxLayer = segment.getLayer();
-            }
-        }
-        return maxLayer;
-    }
-
-    public boolean isTimelinePositionAvailable(double timelineStartTime, double timelineEndTime, int layer) {
-        for (VideoSegment segment : segments) {
-            if (segment.getLayer() == layer) {
-                if (timelineStartTime < segment.getTimelineEndTime() && timelineEndTime > segment.getTimelineStartTime()) {
-                    return false;
-                }
-            }
-        }
-        for (AudioSegment segment : audioSegments) {
-            if (segment.getLayer() == layer && layer < 0) {
-                if (timelineStartTime < segment.getTimelineEndTime() && timelineEndTime > segment.getTimelineStartTime()) {
-                    return false;
-                }
-            }
-        }
-        return true;
     }
 }
