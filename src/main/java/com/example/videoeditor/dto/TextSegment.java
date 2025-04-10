@@ -12,13 +12,13 @@ public class TextSegment {
     private int fontSize = 24;
     private String fontColor = "white";
     private String backgroundColor = "transparent";
-    private Integer positionX = 0; // Changed to Integer for nullable static value
-    private Integer positionY = 0; // Changed to Integer for nullable static value
+    private Integer positionX = 0;
+    private Integer positionY = 0;
+    private Double opacity = 1.0; // Added opacity with default value 1.0
     private double timelineStartTime;
     private double timelineEndTime;
     private int layer = 0;
 
-    // Keyframes for animatable properties
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
 
     public Map<String, List<Keyframe>> getKeyframes() {
@@ -31,7 +31,6 @@ public class TextSegment {
 
     public void addKeyframe(String property, Keyframe keyframe) {
         List<Keyframe> propertyKeyframes = keyframes.computeIfAbsent(property, k -> new ArrayList<>());
-        // Remove existing keyframe at the same time (override behavior)
         propertyKeyframes.removeIf(kf -> Math.abs(kf.getTime() - keyframe.getTime()) < 0.0001);
         propertyKeyframes.add(keyframe);
         propertyKeyframes.sort(Comparator.comparingDouble(Keyframe::getTime));
@@ -44,7 +43,6 @@ public class TextSegment {
         }
     }
 
-    // Getters and setters
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getText() { return text; }
@@ -61,6 +59,8 @@ public class TextSegment {
     public void setPositionX(Integer positionX) { this.positionX = positionX; }
     public Integer getPositionY() { return positionY; }
     public void setPositionY(Integer positionY) { this.positionY = positionY; }
+    public Double getOpacity() { return opacity; } // Added getter
+    public void setOpacity(Double opacity) { this.opacity = opacity; } // Added setter
     public double getTimelineStartTime() { return timelineStartTime; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
     public double getTimelineEndTime() { return timelineEndTime; }

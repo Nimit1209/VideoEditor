@@ -1,9 +1,6 @@
 package com.example.videoeditor.controller;
 
-import com.example.videoeditor.dto.ImageSegment;
-import com.example.videoeditor.dto.Keyframe;
-import com.example.videoeditor.dto.TimelineState;
-import com.example.videoeditor.dto.VideoSegment;
+import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.ProjectRepository;
@@ -16,6 +13,7 @@ import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -130,30 +128,35 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
-            // Extract required parameters from the request
+            // Extract parameters from the request
             String videoPath = (String) request.get("videoPath");
-            Integer layer = (Integer) request.get("layer"); // Layer (optional, default to 0)
+            Integer layer = (Integer) request.get("layer");
             Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : null;
             Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
             Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : null;
             Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
+            Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null; // Added opacity
 
             // Validate required parameters
             if (videoPath == null) {
                 return ResponseEntity.badRequest().body("Missing required parameters: videoPath");
             }
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
+            }
 
-            // Call the service method to add the video to the timeline
+            // Call the service method with updated parameters
             videoEditingService.addVideoToTimeline(
                     sessionId,
                     videoPath,
-                    layer != null ? layer : 0, // Default to layer 0 if not provided
+                    layer != null ? layer : 0,
                     timelineStartTime,
                     timelineEndTime,
                     startTime,
                     endTime
             );
 
+            // Note: Opacity is set to default (1.0) in the service if not provided, no need to pass it here explicitly
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -174,6 +177,7 @@ public class ProjectController {
             Integer positionX = request.containsKey("positionX") ? Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.containsKey("positionY") ? Integer.valueOf(request.get("positionY").toString()) : null;
             Double scale = request.containsKey("scale") ? Double.valueOf(request.get("scale").toString()) : null;
+            Double opacity = request.containsKey("opacity") ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
             Double timelineStartTime = request.containsKey("timelineStartTime") ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.containsKey("timelineEndTime") ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             Integer layer = request.containsKey("layer") ? Integer.valueOf(request.get("layer").toString()) : null;
@@ -197,7 +201,14 @@ public class ProjectController {
                 }
             }
 
-            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale,
+            if (segmentId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
+            }
+
+            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale, opacity,
                     timelineStartTime, layer, timelineEndTime, startTime, endTime, parsedKeyframes);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -233,18 +244,26 @@ public class ProjectController {
             User user = getUserFromToken(token);
 
             String text = (String) request.get("text");
-            int layer = (int) request.get("layer");
-            double timelineStartTime = (double) request.get("timelineStartTime");
-            double timelineEndTime = (double) request.get("timelineEndTime");
+            Integer layer = request.get("layer") != null ? Integer.valueOf(request.get("layer").toString()) : null;
+            Double timelineStartTime = request.get("timelineStartTime") != null ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
+            Double timelineEndTime = request.get("timelineEndTime") != null ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             String fontFamily = (String) request.get("fontFamily");
-            int fontSize = (int) request.get("fontSize");
+            Integer fontSize = request.get("fontSize") != null ? Integer.valueOf(request.get("fontSize").toString()) : null;
             String fontColor = (String) request.get("fontColor");
             String backgroundColor = (String) request.get("backgroundColor");
-            int positionX = (int) request.get("positionX");
-            int positionY = (int) request.get("positionY");
+            Integer positionX = request.get("positionX") != null ? Integer.valueOf(request.get("positionX").toString()) : null;
+            Integer positionY = request.get("positionY") != null ? Integer.valueOf(request.get("positionY").toString()) : null;
+            Double opacity = request.get("opacity") != null ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
+
+            if (text == null || layer == null || timelineStartTime == null || timelineEndTime == null || fontSize == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: text, layer, timelineStartTime, timelineEndTime, fontSize");
+            }
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
+            }
 
             videoEditingService.addTextToTimeline(sessionId, text, layer, timelineStartTime, timelineEndTime,
-                    fontFamily, fontSize, fontColor, backgroundColor, positionX, positionY);
+                    fontFamily, fontSize, fontColor, backgroundColor, positionX, positionY, opacity);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -270,6 +289,7 @@ public class ProjectController {
             String backgroundColor = (String) request.get("backgroundColor");
             Integer positionX = request.containsKey("positionX") ? Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.containsKey("positionY") ? Integer.valueOf(request.get("positionY").toString()) : null;
+            Double opacity = request.containsKey("opacity") ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
             Double timelineStartTime = request.containsKey("timelineStartTime") ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.containsKey("timelineEndTime") ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             Integer layer = request.containsKey("layer") ? Integer.valueOf(request.get("layer").toString()) : null;
@@ -291,8 +311,15 @@ public class ProjectController {
                 }
             }
 
+            if (segmentId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
+            }
+
             videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, fontSize,
-                    fontColor, backgroundColor, positionX, positionY, timelineStartTime, timelineEndTime, layer, parsedKeyframes);
+                    fontColor, backgroundColor, positionX, positionY, opacity, timelineStartTime, timelineEndTime, layer, parsedKeyframes);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -477,6 +504,7 @@ public class ProjectController {
             Double timelineEndTime = request.get("timelineEndTime") != null ?
                     ((Number) request.get("timelineEndTime")).doubleValue() : null;
             String imageFileName = (String) request.get("imageFileName");
+            Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null; // Added opacity
 
             if (layer < 0) {
                 return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
@@ -490,9 +518,12 @@ public class ProjectController {
             if (imageFileName == null || imageFileName.isEmpty()) {
                 return ResponseEntity.badRequest().body("Image filename is required");
             }
+            if (opacity != null && (opacity < 0 || opacity > 1)) {
+                return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
+            }
 
             videoEditingService.addImageToTimelineFromProject(
-                    user, sessionId, projectId, layer, timelineStartTime, timelineEndTime, null, imageFileName);
+                    user, sessionId, projectId, layer, timelineStartTime, timelineEndTime, null, imageFileName, opacity);
             return ResponseEntity.ok().build();
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -786,4 +817,71 @@ public class ProjectController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
+
+    // Adding the new GET mapping here, after other segment-related endpoints
+    @GetMapping("/{projectId}/segments/{segmentId}/filters")
+    public ResponseEntity<List<Filter>> getFiltersForSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String segmentId,
+            @RequestParam String sessionId) {
+        try {
+            User user = getUserFromToken(token); // Authenticate the user
+            // Optionally, you could verify project ownership here:
+            // Project project = projectRepository.findByIdAndUser(projectId, user);
+            // if (project == null) throw new RuntimeException("Project not found or unauthorized");
+
+            List<Filter> filters = videoEditingService.getFiltersForSegment(sessionId, segmentId);
+            return ResponseEntity.ok(filters);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(null); // Return 404 if segment not found
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null); // Return 500 for other unexpected errors
+        }
+    }
+
+    @PutMapping("/{projectId}/update-filter")
+    public ResponseEntity<Filter> updateFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Filter request) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Validate required parameters
+            if (request.getSegmentId() == null || request.getFilterId() == null ||
+                    request.getFilterName() == null || request.getFilterValue() == null) {
+                return ResponseEntity.badRequest()
+                        .body(null);
+            }
+
+            // Call the service method to update the filter
+            videoEditingService.updateFilter(
+                    sessionId,
+                    request.getSegmentId(),
+                    request.getFilterId(),
+                    request.getFilterName(),
+                    request.getFilterValue()
+            );
+
+            // Return the updated filter object
+            Filter updatedFilter = new Filter();
+            updatedFilter.setFilterId(request.getFilterId());
+            updatedFilter.setSegmentId(request.getSegmentId());
+            updatedFilter.setFilterName(request.getFilterName());
+            updatedFilter.setFilterValue(request.getFilterValue());
+
+            return ResponseEntity.ok(updatedFilter);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(null);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null);
+        }
+    }
+
 }

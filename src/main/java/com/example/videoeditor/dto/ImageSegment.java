@@ -9,10 +9,10 @@ public class ImageSegment {
     private String id = UUID.randomUUID().toString();
     private String imagePath;
     private int layer;
-    private Integer positionX = 0; // Changed to Integer for nullable static value
-    private Integer positionY = 0; // Changed to Integer for nullable static value
-    private Double scale = 1.0;    // Changed to Double for nullable static value
-    private double opacity = 1.0;
+    private Integer positionX = 0;
+    private Integer positionY = 0;
+    private Double scale = 1.0;
+    private Double opacity = 1.0; // Already present, just ensuring consistency
     private double timelineStartTime;
     private double timelineEndTime;
     private int width;
@@ -20,7 +20,7 @@ public class ImageSegment {
     private int customWidth;
     private int customHeight;
     private boolean maintainAspectRatio = true;
-    // Keyframes for animatable properties
+
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
 
     public Map<String, List<Keyframe>> getKeyframes() {
@@ -33,7 +33,6 @@ public class ImageSegment {
 
     public void addKeyframe(String property, Keyframe keyframe) {
         List<Keyframe> propertyKeyframes = keyframes.computeIfAbsent(property, k -> new ArrayList<>());
-        // Remove existing keyframe at the same time (override behavior)
         propertyKeyframes.removeIf(kf -> Math.abs(kf.getTime() - keyframe.getTime()) < 0.0001);
         propertyKeyframes.add(keyframe);
         propertyKeyframes.sort(Comparator.comparingDouble(Keyframe::getTime));
@@ -46,7 +45,6 @@ public class ImageSegment {
         }
     }
 
-    // Getters and setters
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getImagePath() { return imagePath; }
@@ -59,8 +57,8 @@ public class ImageSegment {
     public void setPositionY(Integer positionY) { this.positionY = positionY; }
     public Double getScale() { return scale; }
     public void setScale(Double scale) { this.scale = scale; }
-    public double getOpacity() { return opacity; }
-    public void setOpacity(double opacity) { this.opacity = opacity; }
+    public Double getOpacity() { return opacity; }
+    public void setOpacity(Double opacity) { this.opacity = opacity; }
     public double getTimelineStartTime() { return timelineStartTime; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
     public double getTimelineEndTime() { return timelineEndTime; }

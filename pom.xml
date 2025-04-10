@@ -41,20 +41,17 @@
 			<version>0.12.6</version>
 			<scope>runtime</scope>
 		</dependency>
-
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-impl</artifactId>
 			<version>0.12.6</version>
 			<scope>runtime</scope>
 		</dependency>
-
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-api</artifactId>
 			<version>0.12.6</version>
 		</dependency>
-
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
@@ -63,7 +60,6 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-web</artifactId>
 		</dependency>
-
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-devtools</artifactId>
@@ -94,9 +90,8 @@
 		<dependency>
 			<groupId>org.bytedeco</groupId>
 			<artifactId>javacv-platform</artifactId>
-			<version>1.5.9</version> <!-- Use the latest version -->
+			<version>1.5.9</version>
 		</dependency>
-
 		<!-- FFmpeg Library for JavaCV -->
 		<dependency>
 			<groupId>org.bytedeco</groupId>
@@ -106,19 +101,8 @@
 		<!-- OpenCV Library for JavaCV -->
 		<dependency>
 			<groupId>org.bytedeco</groupId>
-			<artifactId> opencv-platform</artifactId>
+			<artifactId>opencv-platform</artifactId>
 			<version>4.7.0-1.5.9</version>
-		</dependency>
-		<dependency>
-			<groupId>org.bytedeco</groupId>
-			<artifactId>javacv-platform</artifactId>
-			<version>1.5.9</version>
-		</dependency>
-
-		<dependency>
-			<groupId>org.bytedeco</groupId>
-			<artifactId>ffmpeg-platform</artifactId>
-			<version>6.0-1.5.9</version>
 		</dependency>
 		<dependency>
 			<groupId>com.google.api-client</groupId>
@@ -134,7 +118,6 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-mail</artifactId>
 		</dependency>
-
 	</dependencies>
 
 	<build>
