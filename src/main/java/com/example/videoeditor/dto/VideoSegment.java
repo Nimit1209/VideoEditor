@@ -17,6 +17,15 @@ public class VideoSegment {
     private Integer layer = 0;
     private double timelineStartTime;
     private double timelineEndTime;
+    private String audioId; // Added audioId field to link to AudioSegment
+
+    public String getAudioId() {
+        return audioId;
+    }
+
+    public void setAudioId(String audioId) {
+        this.audioId = audioId;
+    }
 
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
 

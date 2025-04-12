@@ -13,7 +13,6 @@ import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -156,6 +155,26 @@ public class ProjectController {
                     endTime
             );
 
+            // Retrieve the newly added video and audio segments
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            VideoSegment addedVideoSegment = timelineState.getSegments().stream()
+                    .filter(s -> s.getSourceVideoPath().equals(videoPath) &&
+                            (startTime == null || s.getStartTime() == startTime) &&  // Use == instead of .equals()
+                            (timelineStartTime == null || s.getTimelineStartTime() == timelineStartTime))  // Use == instead of .equals()
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Failed to find added video segment"));
+            AudioSegment addedAudioSegment = timelineState.getAudioSegments().stream()
+                    .filter(a -> a.getId().equals(addedVideoSegment.getAudioId()))
+                    .findFirst()
+                    .orElse(null);
+
+            // Prepare response
+            Map<String, String> response = new HashMap<>();
+            response.put("videoSegmentId", addedVideoSegment.getId());
+            if (addedAudioSegment != null) {
+                response.put("audioSegmentId", addedAudioSegment.getId());
+            }
+
             // Note: Opacity is set to default (1.0) in the service if not provided, no need to pass it here explicitly
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -227,7 +246,20 @@ public class ProjectController {
             User user = getUserFromToken(token);
 
             VideoSegment segment = videoEditingService.getVideoSegment(sessionId, segmentId);
-            return ResponseEntity.ok(segment);
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            AudioSegment audioSegment = segment.getAudioId() != null ?
+                    timelineState.getAudioSegments().stream()
+                            .filter(a -> a.getId().equals(segment.getAudioId()))
+                            .findFirst()
+                            .orElse(null) : null;
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("videoSegment", segment);
+            if (audioSegment != null) {
+                response.put("audioSegment", audioSegment);
+            }
+
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error getting video segment: " + e.getMessage());
@@ -742,6 +774,72 @@ public class ProjectController {
         }
     }
 
+    @PutMapping("/{projectId}/update-filter")
+    public ResponseEntity<Filter> updateFilter(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Filter request) {
+        try {
+            User user = getUserFromToken(token);
+
+            // Validate required parameters
+            if (request.getSegmentId() == null || request.getFilterId() == null ||
+                    request.getFilterName() == null || request.getFilterValue() == null) {
+                return ResponseEntity.badRequest()
+                        .body(null);
+            }
+
+            // Call the service method to update the filter
+            videoEditingService.updateFilter(
+                    sessionId,
+                    request.getSegmentId(),
+                    request.getFilterId(),
+                    request.getFilterName(),
+                    request.getFilterValue()
+            );
+
+            // Return the updated filter object
+            Filter updatedFilter = new Filter();
+            updatedFilter.setFilterId(request.getFilterId());
+            updatedFilter.setSegmentId(request.getSegmentId());
+            updatedFilter.setFilterName(request.getFilterName());
+            updatedFilter.setFilterValue(request.getFilterValue());
+
+            return ResponseEntity.ok(updatedFilter);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(null);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null);
+        }
+    }
+
+    // Adding the new GET mapping here, after other segment-related endpoints
+    @GetMapping("/{projectId}/segments/{segmentId}/filters")
+    public ResponseEntity<List<Filter>> getFiltersForSegment(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String segmentId,
+            @RequestParam String sessionId) {
+        try {
+            User user = getUserFromToken(token); // Authenticate the user
+            // Optionally, you could verify project ownership here:
+            // Project project = projectRepository.findByIdAndUser(projectId, user);
+            // if (project == null) throw new RuntimeException("Project not found or unauthorized");
+
+            List<Filter> filters = videoEditingService.getFiltersForSegment(sessionId, segmentId);
+            return ResponseEntity.ok(filters);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(null); // Return 404 if segment not found
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null); // Return 500 for other unexpected errors
+        }
+    }
+
     @DeleteMapping("/{projectId}/remove-filter")
     public ResponseEntity<?> removeFilter(
             @RequestHeader("Authorization") String token,
@@ -817,71 +915,4 @@ public class ProjectController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
-
-    // Adding the new GET mapping here, after other segment-related endpoints
-    @GetMapping("/{projectId}/segments/{segmentId}/filters")
-    public ResponseEntity<List<Filter>> getFiltersForSegment(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @PathVariable String segmentId,
-            @RequestParam String sessionId) {
-        try {
-            User user = getUserFromToken(token); // Authenticate the user
-            // Optionally, you could verify project ownership here:
-            // Project project = projectRepository.findByIdAndUser(projectId, user);
-            // if (project == null) throw new RuntimeException("Project not found or unauthorized");
-
-            List<Filter> filters = videoEditingService.getFiltersForSegment(sessionId, segmentId);
-            return ResponseEntity.ok(filters);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(null); // Return 404 if segment not found
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(null); // Return 500 for other unexpected errors
-        }
-    }
-
-    @PutMapping("/{projectId}/update-filter")
-    public ResponseEntity<Filter> updateFilter(
-            @RequestHeader("Authorization") String token,
-            @PathVariable Long projectId,
-            @RequestParam String sessionId,
-            @RequestBody Filter request) {
-        try {
-            User user = getUserFromToken(token);
-
-            // Validate required parameters
-            if (request.getSegmentId() == null || request.getFilterId() == null ||
-                    request.getFilterName() == null || request.getFilterValue() == null) {
-                return ResponseEntity.badRequest()
-                        .body(null);
-            }
-
-            // Call the service method to update the filter
-            videoEditingService.updateFilter(
-                    sessionId,
-                    request.getSegmentId(),
-                    request.getFilterId(),
-                    request.getFilterName(),
-                    request.getFilterValue()
-            );
-
-            // Return the updated filter object
-            Filter updatedFilter = new Filter();
-            updatedFilter.setFilterId(request.getFilterId());
-            updatedFilter.setSegmentId(request.getSegmentId());
-            updatedFilter.setFilterName(request.getFilterName());
-            updatedFilter.setFilterValue(request.getFilterValue());
-
-            return ResponseEntity.ok(updatedFilter);
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(null);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(null);
-        }
-    }
-
 }
