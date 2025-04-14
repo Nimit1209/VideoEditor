@@ -30,11 +30,9 @@ public class VideoEditingService {
     private final ObjectMapper objectMapper;
     private final Map<String, EditSession> activeSessions;
 
-    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
-    //    private final String ffmpegPath = ""
-    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
+    private final String ffmpegPath = "C:\\Users\\raj.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffmpeg.exe";
+    private final String baseDir = "D:\\Backend\\videoEditor-main"; // Base directory constant
 
-    //    private final String baseDir = "C:\\Users\\nimit.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build.7z\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffmpeg.exe"
     public VideoEditingService(
             ProjectRepository projectRepository,
             EditedVideoRepository editedVideoRepository,
@@ -1290,33 +1288,94 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
+    public void deleteProjectFiles(Long projectId) throws IOException {
+        // Define directories
+        File videoDir = new File(baseDir, "videos/projects/" + projectId);
+        File imageDir = new File(baseDir, "images/projects/" + projectId);
+        File audioDir = new File(baseDir, "audio/projects/" + projectId);
+
+        // Delete directories if they exist
+        if (videoDir.exists()) {
+            deleteDirectory(videoDir);
+        }
+        if (imageDir.exists()) {
+            deleteDirectory(imageDir);
+        }
+        if (audioDir.exists()) {
+            deleteDirectory(audioDir);
+        }
+    }
+
+    private void deleteDirectory(File directory) throws IOException {
+        if (directory.isDirectory()) {
+            File[] files = directory.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isDirectory()) {
+                        deleteDirectory(file);
+                    } else {
+                        file.delete();
+                    }
+                }
+            }
+        }
+        directory.delete();
+    }
+
     public File exportProject(String sessionId) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
+
+        // Check if session exists
+        if (session == null) {
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        // Get project details
         Project project = projectRepository.findById(session.getProjectId())
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
-        String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "_") + "_" + System.currentTimeMillis() + ".mp4";
-        String outputPath = baseDir + "/exports/" + outputFileName;
+        // Create default output path
+        String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "_") + "_"
+                + System.currentTimeMillis() + ".mp4";
+        String outputPath = "exports/" + outputFileName;
 
-        File exportsDir = new File(baseDir, "exports");
+        // Ensure exports directory exists
+        File exportsDir = new File("exports");
         if (!exportsDir.exists()) {
             exportsDir.mkdirs();
         }
 
+        // Render the final video
         String exportedVideoPath = renderFinalVideo(session.getTimelineState(), outputPath, project.getWidth(), project.getHeight());
 
+        // Update project status to exported
         project.setStatus("EXPORTED");
         project.setLastModified(LocalDateTime.now());
         project.setExportedVideoPath(exportedVideoPath);
-        project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
+
+        try {
+            project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
+        } catch (JsonProcessingException e) {
+            System.err.println("Error saving timeline state: " + e.getMessage());
+            // Continue with export even if saving timeline state fails
+        }
+
         projectRepository.save(project);
 
+        System.out.println("Project successfully exported to: " + exportedVideoPath);
+
+        // Return the File object as per your original implementation
         return new File(exportedVideoPath);
     }
 
     private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight)
             throws IOException, InterruptedException {
-        File tempDir = new File(baseDir, "temp");
+        System.out.println("Rendering final video to: " + outputPath);
+
+        if (timelineState.getCanvasWidth() != null) canvasWidth = timelineState.getCanvasWidth();
+        if (timelineState.getCanvasHeight() != null) canvasHeight = timelineState.getCanvasHeight();
+
+        File tempDir = new File("temp");
         if (!tempDir.exists()) tempDir.mkdirs();
 
         double totalDuration = Math.max(
@@ -1329,12 +1388,14 @@ public class VideoEditingService {
                         )
                 )
         );
+        System.out.println("Total video duration: " + totalDuration + " seconds");
 
         List<String> command = new ArrayList<>();
         command.add(ffmpegPath);
 
         StringBuilder filterComplex = new StringBuilder();
-        Map<String, String> inputIndices = new HashMap<>();
+        Map<String, String> videoInputIndices = new HashMap<>();
+        Map<String, String> audioInputIndices = new HashMap<>();
         int inputCount = 0;
 
         filterComplex.append("color=c=black:s=").append(canvasWidth).append("x").append(canvasHeight)
@@ -1342,22 +1403,24 @@ public class VideoEditingService {
 
         for (VideoSegment vs : timelineState.getSegments()) {
             command.add("-i");
-            command.add(baseDir + "/videos/" + vs.getSourceVideoPath());
-            inputIndices.put(vs.getId(), String.valueOf(inputCount++));
+            command.add(baseDir + "\\videos\\" + vs.getSourceVideoPath());
+            videoInputIndices.put(vs.getId(), String.valueOf(inputCount));
+            audioInputIndices.put(vs.getId(), String.valueOf(inputCount));
+            inputCount++;
         }
 
         for (ImageSegment is : timelineState.getImageSegments()) {
             command.add("-loop");
             command.add("1");
             command.add("-i");
-            command.add(baseDir + "/" + is.getImagePath());
-            inputIndices.put(is.getId(), String.valueOf(inputCount++));
+            command.add(baseDir + "\\" + is.getImagePath());
+            videoInputIndices.put(is.getId(), String.valueOf(inputCount++));
         }
 
         for (AudioSegment as : timelineState.getAudioSegments()) {
             command.add("-i");
-            command.add(baseDir + "/" + as.getAudioPath());
-            inputIndices.put(as.getId(), String.valueOf(inputCount++));
+            command.add(baseDir + "\\" + as.getAudioPath());
+            audioInputIndices.put(as.getId(), String.valueOf(inputCount++));
         }
 
         List<Object> allSegments = new ArrayList<>();
@@ -1376,102 +1439,489 @@ public class VideoEditingService {
         int overlayCount = 0;
 
         for (Object segment : allSegments) {
-            String outputLabel = "v" + overlayCount++;
+            String outputLabel = "ov" + overlayCount++;
+
             if (segment instanceof VideoSegment) {
                 VideoSegment vs = (VideoSegment) segment;
-                String inputIdx = inputIndices.get(vs.getId());
+                String inputIdx = videoInputIndices.get(vs.getId());
 
                 filterComplex.append("[").append(inputIdx).append(":v]");
+                // Trim the source video from startTime to endTime
                 filterComplex.append("trim=").append(vs.getStartTime()).append(":").append(vs.getEndTime()).append(",");
+                // Shift timestamps to align with timelineStartTime
                 filterComplex.append("setpts=PTS-STARTPTS+").append(vs.getTimelineStartTime()).append("/TB,");
-                filterComplex.append("scale=").append(canvasWidth).append(":").append(canvasHeight).append(":force_original_aspect_ratio=decrease,");
-                filterComplex.append("pad=").append(canvasWidth).append(":").append(canvasHeight).append(":(ow-iw)/2:(oh-ih)/2");
-                filterComplex.append("[v").append(vs.getId()).append("];");
 
-                filterComplex.append("[").append(lastOutput).append("][v").append(vs.getId()).append("]");
-                filterComplex.append("overlay=0:0:enable='between(t,").append(vs.getTimelineStartTime()).append(",").append(vs.getTimelineEndTime()).append(")'");
-                filterComplex.append("[").append(outputLabel).append("];");
-                lastOutput = outputLabel;
+                // Apply filters (saturation, blur, hue)
+                List<Filter> segmentFilters = timelineState.getFilters().stream()
+                        .filter(f -> f.getSegmentId().equals(vs.getId()))
+                        .collect(Collectors.toList());
+                for (Filter filter : segmentFilters) {
+                    switch (filter.getFilterName().toLowerCase()) {
+                        case "saturation":
+                            filterComplex.append("eq=saturation=").append(filter.getFilterValue()).append(",");
+                            break;
+                        case "blur":
+                            filterComplex.append("gblur=sigma=").append(filter.getFilterValue()).append(",");
+                            break;
+                        case "hue":
+                            filterComplex.append("hue=h=").append(filter.getFilterValue()).append(",");
+                            break;
+                    }
+                }
+
+                // Handle scaling with keyframes
+                StringBuilder scaleExpr = new StringBuilder();
+                List<Keyframe> scaleKeyframes = vs.getKeyframes().getOrDefault("scale", new ArrayList<>());
+                double defaultScale = vs.getScale() != null ? vs.getScale() : 1.0;
+
+                if (!scaleKeyframes.isEmpty()) {
+                    Collections.sort(scaleKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) scaleKeyframes.get(0).getValue()).doubleValue();
+                    scaleExpr.append(firstKfValue);
+                    for (int j = 1; j < scaleKeyframes.size(); j++) {
+                        Keyframe prevKf = scaleKeyframes.get(j - 1);
+                        Keyframe kf = scaleKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            // Adjust times to timeline
+                            double timelinePrevTime = vs.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = vs.getTimelineStartTime() + kfTime;
+                            scaleExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                } else {
+                    scaleExpr.append(defaultScale);
+                }
+
+                filterComplex.append("scale=w='iw*").append(scaleExpr).append("':h='ih*").append(scaleExpr).append("':eval=frame[scaled").append(outputLabel).append("];");
+
+                // Handle position X with keyframes
+                StringBuilder xExpr = new StringBuilder();
+                List<Keyframe> posXKeyframes = vs.getKeyframes().getOrDefault("positionX", new ArrayList<>());
+                Integer defaultPosX = vs.getPositionX();
+                double baseX = defaultPosX != null ? defaultPosX : 0;
+
+                if (!posXKeyframes.isEmpty()) {
+                    Collections.sort(posXKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) posXKeyframes.get(0).getValue()).doubleValue();
+                    xExpr.append(firstKfValue);
+                    for (int j = 1; j < posXKeyframes.size(); j++) {
+                        Keyframe prevKf = posXKeyframes.get(j - 1);
+                        Keyframe kf = posXKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            double timelinePrevTime = vs.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = vs.getTimelineStartTime() + kfTime;
+                            xExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                    xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
+                } else {
+                    xExpr.append("(W-w)/2+").append(baseX).append("-w/2*(").append(scaleExpr).append("-1)");
+                }
+
+                // Handle position Y with keyframes
+                StringBuilder yExpr = new StringBuilder();
+                List<Keyframe> posYKeyframes = vs.getKeyframes().getOrDefault("positionY", new ArrayList<>());
+                Integer defaultPosY = vs.getPositionY();
+                double baseY = defaultPosY != null ? defaultPosY : 0;
+
+                if (!posYKeyframes.isEmpty()) {
+                    Collections.sort(posYKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) posYKeyframes.get(0).getValue()).doubleValue();
+                    yExpr.append(firstKfValue);
+                    for (int j = 1; j < posYKeyframes.size(); j++) {
+                        Keyframe prevKf = posYKeyframes.get(j - 1);
+                        Keyframe kf = posYKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            double timelinePrevTime = vs.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = vs.getTimelineStartTime() + kfTime;
+                            yExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                    yExpr.insert(0, "(").append("+(H-h)/2-h/2*(").append(scaleExpr).append("-1))");
+                } else {
+                    yExpr.append("(H-h)/2+").append(baseY).append("-h/2*(").append(scaleExpr).append("-1)");
+                }
+
+                // Overlay the scaled video onto the previous output
+                filterComplex.append("[").append(lastOutput).append("][scaled").append(outputLabel).append("]");
+                filterComplex.append("overlay=x='").append(xExpr).append("':y='").append(yExpr).append("':format=rgb");
+                filterComplex.append(":enable='between(t,").append(vs.getTimelineStartTime()).append(",").append(vs.getTimelineEndTime()).append(")'");
+                filterComplex.append("[ov").append(outputLabel).append("];");
+                lastOutput = "ov" + outputLabel;
             } else if (segment instanceof ImageSegment) {
                 ImageSegment is = (ImageSegment) segment;
-                String inputIdx = inputIndices.get(is.getId());
-                double duration = is.getTimelineEndTime() - is.getTimelineStartTime();
+                String inputIdx = videoInputIndices.get(is.getId());
+                double segmentDuration = is.getTimelineEndTime() - is.getTimelineStartTime();
 
                 filterComplex.append("[").append(inputIdx).append(":v]");
-                filterComplex.append("trim=0:").append(duration).append(",");
-                filterComplex.append("setpts=PTS-STARTPTS+").append(is.getTimelineStartTime()).append("/TB,");
-                filterComplex.append("scale=").append(is.getWidth() * (is.getScale() != null ? is.getScale() : 1.0))
-                        .append(":").append(is.getHeight() * (is.getScale() != null ? is.getScale() : 1.0));
-                filterComplex.append("[v").append(is.getId()).append("];");
+                filterComplex.append("trim=0:").append(segmentDuration).append(",");
+                filterComplex.append("setpts=PTS-STARTPTS,");
 
-                filterComplex.append("[").append(lastOutput).append("][v").append(is.getId()).append("]");
-                filterComplex.append("overlay=").append(is.getPositionX()).append(":").append(is.getPositionY())
-                        .append(":enable='between(t,").append(is.getTimelineStartTime()).append(",").append(is.getTimelineEndTime()).append(")'");
-                filterComplex.append("[").append(outputLabel).append("];");
-                lastOutput = outputLabel;
+                List<Filter> segmentFilters = timelineState.getFilters().stream()
+                        .filter(f -> f.getSegmentId().equals(is.getId()))
+                        .collect(Collectors.toList());
+                for (Filter filter : segmentFilters) {
+                    switch (filter.getFilterName().toLowerCase()) {
+                        case "saturation":
+                            filterComplex.append("eq=saturation=").append(filter.getFilterValue()).append(",");
+                            break;
+                        case "blur":
+                            filterComplex.append("gblur=sigma=").append(filter.getFilterValue()).append(",");
+                            break;
+                        case "hue":
+                            filterComplex.append("hue=h=").append(filter.getFilterValue()).append(",");
+                            break;
+                    }
+                }
+
+                // Handle scaling with keyframes
+                StringBuilder scaleExpr = new StringBuilder();
+                List<Keyframe> scaleKeyframes = is.getKeyframes().getOrDefault("scale", new ArrayList<>());
+                double defaultScale = is.getScale() != null ? is.getScale() : 1.0;
+
+                if (!scaleKeyframes.isEmpty()) {
+                    Collections.sort(scaleKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) scaleKeyframes.get(0).getValue()).doubleValue();
+                    scaleExpr.append(firstKfValue);
+                    for (int j = 1; j < scaleKeyframes.size(); j++) {
+                        Keyframe prevKf = scaleKeyframes.get(j - 1);
+                        Keyframe kf = scaleKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            // Adjust times to timeline
+                            double timelinePrevTime = is.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = is.getTimelineStartTime() + kfTime;
+                            scaleExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                } else {
+                    scaleExpr.append(defaultScale);
+                }
+
+                filterComplex.append("scale=w='iw*").append(scaleExpr).append("':h='ih*").append(scaleExpr).append("':eval=frame[scaled").append(outputLabel).append("];");
+
+                // Handle position X with keyframes
+                StringBuilder xExpr = new StringBuilder();
+                List<Keyframe> posXKeyframes = is.getKeyframes().getOrDefault("positionX", new ArrayList<>());
+                Integer defaultPosX = is.getPositionX();
+                double baseX = defaultPosX != null ? defaultPosX : 0;
+
+                if (!posXKeyframes.isEmpty()) {
+                    Collections.sort(posXKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) posXKeyframes.get(0).getValue()).doubleValue();
+                    xExpr.append(firstKfValue);
+                    for (int j = 1; j < posXKeyframes.size(); j++) {
+                        Keyframe prevKf = posXKeyframes.get(j - 1);
+                        Keyframe kf = posXKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            double timelinePrevTime = is.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = is.getTimelineStartTime() + kfTime;
+                            xExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                    // Center the image and adjust for scaling
+                    xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
+                } else {
+                    // Center the image with offset and adjust for scaling
+                    xExpr.append("(W-w)/2+").append(baseX).append("-w/2*(").append(scaleExpr).append("-1)");
+                }
+
+                // Handle position Y with keyframes
+                StringBuilder yExpr = new StringBuilder();
+                List<Keyframe> posYKeyframes = is.getKeyframes().getOrDefault("positionY", new ArrayList<>());
+                Integer defaultPosY = is.getPositionY();
+                double baseY = defaultPosY != null ? defaultPosY : 0;
+
+                if (!posYKeyframes.isEmpty()) {
+                    Collections.sort(posYKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) posYKeyframes.get(0).getValue()).doubleValue();
+                    yExpr.append(firstKfValue);
+                    for (int j = 1; j < posYKeyframes.size(); j++) {
+                        Keyframe prevKf = posYKeyframes.get(j - 1);
+                        Keyframe kf = posYKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            double timelinePrevTime = is.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = is.getTimelineStartTime() + kfTime;
+                            yExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                    // Center the image and adjust for scaling
+                    yExpr.insert(0, "(").append("+(H-h)/2-h/2*(").append(scaleExpr).append("-1))");
+                } else {
+                    // Center the image with offset and adjust for scaling
+                    yExpr.append("(H-h)/2+").append(baseY).append("-h/2*(").append(scaleExpr).append("-1)");
+                }
+
+                filterComplex.append("[").append(lastOutput).append("][scaled").append(outputLabel).append("]");
+                filterComplex.append("overlay=x='").append(xExpr).append("':y='").append(yExpr).append("':format=rgb");
+                filterComplex.append(":enable='between(t,").append(is.getTimelineStartTime()).append(",").append(is.getTimelineEndTime()).append(")'");
+                filterComplex.append("[ov").append(outputLabel).append("];");
+                lastOutput = "ov" + outputLabel;
+
             } else if (segment instanceof TextSegment) {
                 TextSegment ts = (TextSegment) segment;
+
                 filterComplex.append("[").append(lastOutput).append("]");
-                filterComplex.append("drawtext=fontfile='C:\\Windows\\Fonts\\").append(ts.getFontFamily()).append(".ttf':");
-                filterComplex.append("text='").append(ts.getText().replace("'", "\\'")).append("':");
-                filterComplex.append("fontsize=").append(ts.getFontSize()).append(":");
+                filterComplex.append("drawtext=text='").append(ts.getText().replace("'", "\\'")).append("':");
+                filterComplex.append("enable='between(t,").append(ts.getTimelineStartTime()).append(",").append(ts.getTimelineEndTime()).append(")':");
                 filterComplex.append("fontcolor=").append(ts.getFontColor()).append(":");
-                filterComplex.append("x=").append(ts.getPositionX()).append(":y=").append(ts.getPositionY()).append(":");
-                if (!"transparent".equalsIgnoreCase(ts.getBackgroundColor())) {
-                    filterComplex.append("box=1:boxcolor=").append(ts.getBackgroundColor()).append("@1.0:");
+                filterComplex.append("fontsize=").append(ts.getFontSize()).append(":");
+                filterComplex.append("fontfile='").append(getFontPathByFamily(ts.getFontFamily())).append("':");
+                if (ts.getBackgroundColor() != null && !ts.getBackgroundColor().equals("transparent")) {
+                    filterComplex.append("box=1:boxcolor=").append(ts.getBackgroundColor()).append("@0.5:");
                 }
-                filterComplex.append("enable='between(t,").append(ts.getTimelineStartTime()).append(",").append(ts.getTimelineEndTime()).append(")'");
-                filterComplex.append("[").append(outputLabel).append("];");
-                lastOutput = outputLabel;
+
+                // Handle position X with keyframes
+                StringBuilder xExpr = new StringBuilder();
+                List<Keyframe> posXKeyframes = ts.getKeyframes().getOrDefault("positionX", new ArrayList<>());
+                Integer defaultPosX = ts.getPositionX();
+                double baseX = defaultPosX != null ? defaultPosX : 0;
+
+                if (!posXKeyframes.isEmpty()) {
+                    Collections.sort(posXKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) posXKeyframes.get(0).getValue()).doubleValue();
+                    xExpr.append(firstKfValue);
+                    for (int j = 1; j < posXKeyframes.size(); j++) {
+                        Keyframe prevKf = posXKeyframes.get(j - 1);
+                        Keyframe kf = posXKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            double timelinePrevTime = ts.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = ts.getTimelineStartTime() + kfTime;
+                            xExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                    xExpr.insert(0, "(").append("+(w-tw)/2)");
+                } else {
+                    xExpr.append("(w-tw)/2+").append(baseX);
+                }
+
+                // Handle position Y with keyframes
+                StringBuilder yExpr = new StringBuilder();
+                List<Keyframe> posYKeyframes = ts.getKeyframes().getOrDefault("positionY", new ArrayList<>());
+                Integer defaultPosY = ts.getPositionY();
+                double baseY = defaultPosY != null ? defaultPosY : 0;
+
+                if (!posYKeyframes.isEmpty()) {
+                    Collections.sort(posYKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                    double firstKfValue = ((Number) posYKeyframes.get(0).getValue()).doubleValue();
+                    yExpr.append(firstKfValue);
+                    for (int j = 1; j < posYKeyframes.size(); j++) {
+                        Keyframe prevKf = posYKeyframes.get(j - 1);
+                        Keyframe kf = posYKeyframes.get(j);
+                        double prevTime = prevKf.getTime();
+                        double kfTime = kf.getTime();
+                        double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                        double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                        if (kfTime > prevTime) {
+                            double timelinePrevTime = ts.getTimelineStartTime() + prevTime;
+                            double timelineKfTime = ts.getTimelineStartTime() + kfTime;
+                            yExpr.insert(0, "lerp(").append(",").append(kfValue)
+                                    .append(",min(1,max(0,(t-").append(timelinePrevTime).append(")/(")
+                                    .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
+                        }
+                    }
+                    yExpr.insert(0, "(").append("+(h-th)/2)");
+                } else {
+                    yExpr.append("(h-th)/2+").append(baseY);
+                }
+
+                filterComplex.append("x='").append(xExpr).append("':y='").append(yExpr).append("'");
+                filterComplex.append("[ov").append(outputLabel).append("];");
+                lastOutput = "ov" + outputLabel;
             }
         }
 
-        StringBuilder audioFilter = new StringBuilder();
-        List<String> audioInputs = new ArrayList<>();
+        List<String> audioOutputs = new ArrayList<>();
         int audioCount = 0;
 
+//        for (VideoSegment vs : timelineState.getSegments()) {
+//            String inputIdx = audioInputIndices.get(vs.getId());
+//            String audioOutput = "va" + audioCount++;
+//            double audioStart = vs.getStartTime();
+//            double audioEnd = vs.getEndTime();
+//            double timelineStart = vs.getTimelineStartTime();
+//            double timelineEnd = vs.getTimelineEndTime();
+//
+//            filterComplex.append("[").append(inputIdx).append(":a]");
+//            filterComplex.append("atrim=").append(audioStart).append(":").append(audioEnd).append(",");
+//            filterComplex.append("asetpts=PTS-STARTPTS");
+//            filterComplex.append(",adelay=").append((int)(timelineStart * 1000)).append("|").append((int)(timelineStart * 1000));
+//            filterComplex.append(",apad=pad_dur=").append(totalDuration - timelineEnd);
+//            filterComplex.append("[").append(audioOutput).append("];");
+//            audioOutputs.add(audioOutput);
+//        }
+
         for (AudioSegment as : timelineState.getAudioSegments()) {
-            String inputIdx = inputIndices.get(as.getId());
-            audioFilter.append("[").append(inputIdx).append(":a]");
-            audioFilter.append("atrim=").append(as.getStartTime()).append(":").append(as.getEndTime()).append(",");
-            audioFilter.append("adelay=").append((long) (as.getTimelineStartTime() * 1000)).append("|").append((long) (as.getTimelineStartTime() * 1000)).append(",");
-            audioFilter.append("volume=").append(as.getVolume() != null ? as.getVolume() : 1.0);
-            audioFilter.append("[a").append(audioCount).append("];");
-            audioInputs.add("[a" + audioCount++ + "]");
+            String inputIdx = audioInputIndices.get(as.getId());
+            String audioOutput = "aa" + audioCount++;
+            double audioStart = as.getStartTime();
+            double audioEnd = as.getEndTime();
+            double timelineStart = as.getTimelineStartTime();
+            double timelineEnd = as.getTimelineEndTime();
+            double sourceDuration = audioEnd - audioStart;
+            double timelineDuration = timelineEnd - timelineStart;
+
+            // Validate timing
+            if (audioStart < 0 || audioEnd <= audioStart || timelineStart < 0 || timelineEnd <= timelineStart) {
+                System.err.println("Invalid timing for audio segment " + as.getId() + ": startTime=" + audioStart +
+                        ", endTime=" + audioEnd + ", timelineStartTime=" + timelineStart + ", timelineEndTime=" + timelineEnd);
+                continue;
+            }
+            if (Math.abs(timelineDuration - sourceDuration) > 0.01) {
+                System.err.println("Warning: Audio segment " + as.getId() + " timeline duration (" + timelineDuration +
+                        ") does not match source duration (" + sourceDuration + ")");
+            }
+
+            filterComplex.append("[").append(inputIdx).append(":a]");
+            // Trim the audio from startTime to endTime
+            filterComplex.append("atrim=").append(audioStart).append(":").append(audioEnd).append(",");
+            // Reset timestamps to start at 0
+            filterComplex.append("asetpts=PTS-STARTPTS,");
+
+            // Apply volume keyframes or static volume
+            List<Keyframe> volumeKeyframes = as.getKeyframes().getOrDefault("volume", new ArrayList<>());
+            if (!volumeKeyframes.isEmpty()) {
+                StringBuilder volumeExpr = new StringBuilder();
+                double defaultVolume = as.getVolume() != null ? as.getVolume() : 1.0;
+
+                Collections.sort(volumeKeyframes, Comparator.comparingDouble(Keyframe::getTime));
+                double firstKfTime = volumeKeyframes.get(0).getTime();
+                double firstKfValue = ((Number) volumeKeyframes.get(0).getValue()).doubleValue();
+                volumeExpr.append("if(lt(t,").append(firstKfTime).append("),").append(defaultVolume);
+
+                for (int j = 1; j < volumeKeyframes.size(); j++) {
+                    Keyframe prevKf = volumeKeyframes.get(j - 1);
+                    Keyframe kf = volumeKeyframes.get(j);
+                    double prevTime = prevKf.getTime();
+                    double kfTime = kf.getTime();
+                    double prevValue = ((Number) prevKf.getValue()).doubleValue();
+                    double kfValue = ((Number) kf.getValue()).doubleValue();
+
+                    if (kfTime > prevTime) {
+                        volumeExpr.append(",if(between(t,").append(prevTime).append(",").append(kfTime).append("),");
+                        volumeExpr.append(prevValue).append("+((t-").append(prevTime).append(")/(")
+                                .append(kfTime).append("-").append(prevTime).append("))*(")
+                                .append(kfValue).append("-").append(prevValue).append(")");
+                    }
+                }
+                volumeExpr.append(",").append(((Number) volumeKeyframes.get(volumeKeyframes.size() - 1).getValue()).doubleValue());
+                for (int j = 0; j < volumeKeyframes.size(); j++) {
+                    volumeExpr.append(")");
+                }
+
+                filterComplex.append("volume=").append(volumeExpr).append(",");
+            } else if (as.getVolume() != null && as.getVolume() != 1.0) {
+                filterComplex.append("volume=").append(as.getVolume()).append(",");
+            }
+
+            // Delay the audio to start at timelineStartTime
+            filterComplex.append("adelay=").append((int)(timelineStart * 1000)).append("|").append((int)(timelineStart * 1000)).append(",");
+            // Ensure the audio duration matches the timeline duration, padding if necessary
+            if (sourceDuration < timelineDuration) {
+                filterComplex.append("apad=pad_dur=").append(timelineDuration - sourceDuration).append(",");
+            } else if (sourceDuration > timelineDuration) {
+                filterComplex.append("atrim=0:").append(timelineDuration).append(",");
+            }
+            // Pad to totalDuration to ensure compatibility with amix
+            filterComplex.append("apad=pad_dur=").append(totalDuration - timelineEnd).append(",");
+            filterComplex.append("asetpts=PTS-STARTPTS");
+
+            filterComplex.append("[").append(audioOutput).append("];");
+            audioOutputs.add(audioOutput);
         }
 
-        if (!audioInputs.isEmpty()) {
-            filterComplex.append(audioFilter);
-            filterComplex.append(String.join("", audioInputs)).append("amix=inputs=").append(audioInputs.size()).append("[audio];");
-            command.add("-map");
-            command.add("[audio]");
-        } else {
-            command.add("-an");
+        if (!audioOutputs.isEmpty()) {
+            for (String audioOutput : audioOutputs) {
+                filterComplex.append("[").append(audioOutput).append("]");
+            }
+            filterComplex.append("amix=inputs=").append(audioOutputs.size()).append(":duration=longest[aout];");
         }
+
+        filterComplex.append("[").append(lastOutput).append("]setpts=PTS-STARTPTS[vout]");
 
         command.add("-filter_complex");
         command.add(filterComplex.toString());
+
         command.add("-map");
-        command.add("[" + lastOutput + "]");
+        command.add("[vout]");
+        if (!audioOutputs.isEmpty()) {
+            command.add("-map");
+            command.add("[aout]");
+        }
+
         command.add("-c:v");
         command.add("libx264");
-        command.add("-pix_fmt");
-        command.add("yuv420p");
+        command.add("-c:a");
+        command.add("aac");
+        command.add("-b:a");
+        command.add("320k");
+        command.add("-ar");
+        command.add("48000");
         command.add("-t");
         command.add(String.valueOf(totalDuration));
         command.add("-y");
         command.add(outputPath);
 
+        System.out.println("FFmpeg command: " + String.join(" ", command));
         executeFFmpegCommand(command);
 
         return outputPath;
     }
 
     private void executeFFmpegCommand(List<String> command) throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
+        ProcessBuilder processBuilder = new ProcessBuilder(command);
+        processBuilder.redirectErrorStream(true);
 
+        Process process = processBuilder.start();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -1479,86 +1929,66 @@ public class VideoEditingService {
             }
         }
 
-        int exitCode = process.waitFor();
+        boolean completed = process.waitFor(5, TimeUnit.MINUTES);
+        if (!completed) {
+            process.destroyForcibly();
+            throw new RuntimeException("FFmpeg process timed out after 5 minutes");
+        }
+
+        int exitCode = process.exitValue();
         if (exitCode != 0) {
-            throw new IOException("FFmpeg command failed with exit code " + exitCode);
+            throw new RuntimeException("FFmpeg process failed with exit code: " + exitCode);
         }
     }
 
-    public Project uploadVideoToProject(User user, Long projectId, MultipartFile videoFile) throws IOException {
-        Project project = projectRepository.findById(projectId)
-                .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+    /**
+     * Gets the system font path for a given font family name.
+     * @param fontFamily The font family name
+     * @return The full path to the font file
+     */
+    private String getFontPathByFamily(String fontFamily) {
+        // Default font path if nothing else matches
+        String defaultFontPath = "C:/Windows/Fonts/Arial.ttf";
 
-        if (!project.getUser().getId().equals(user.getId())) {
-            throw new RuntimeException("Unauthorized to modify this project");
+        if (fontFamily == null || fontFamily.trim().isEmpty()) {
+            return defaultFontPath;
         }
 
-        File videoDir = new File(baseDir, "videos");
-        if (!videoDir.exists()) {
-            videoDir.mkdirs();
+        // Map common font families to their file paths
+        // You can expand this map with more fonts as needed
+        Map<String, String> fontMap = new HashMap<>();
+        fontMap.put("Arial", "C\\:/Windows/Fonts/Arial.ttf");
+        fontMap.put("Times New Roman", "C\\:/Windows/Fonts/times.ttf");
+        fontMap.put("Courier New", "C\\:/Windows/Fonts/cour.ttf");
+        fontMap.put("Calibri", "C\\:/Windows/Fonts/calibri.ttf");
+        fontMap.put("Verdana", "C\\:/Windows/Fonts/verdana.ttf");
+        fontMap.put("Georgia", "C\\:/Windows/Fonts/georgia.ttf");
+        fontMap.put("Comic Sans MS", "C\\:/Windows/Fonts/comic.ttf");
+        fontMap.put("Impact", "C\\:/Windows/Fonts/impact.ttf");
+        fontMap.put("Tahoma", "C\\:/Windows/Fonts/tahoma.ttf");
+
+        // Process the font family name to match potential keys
+        String processedFontFamily = fontFamily.trim();
+
+        // Try direct match
+        if (fontMap.containsKey(processedFontFamily)) {
+            System.out.println("Found exact font match for: " + processedFontFamily);
+            return fontMap.get(processedFontFamily);
         }
 
-        String uniqueFileName = projectId + "_" + System.currentTimeMillis() + "_" + videoFile.getOriginalFilename();
-        File destinationFile = new File(videoDir, uniqueFileName);
-
-        videoFile.transferTo(destinationFile);
-
-        String relativePath = uniqueFileName;
-        try {
-            addVideo(project, relativePath, uniqueFileName);
-        } catch (JsonProcessingException e) {
-            throw new IOException("Failed to process video data", e);
-        }
-        project.setLastModified(LocalDateTime.now());
-
-        return projectRepository.save(project);
-    }
-
-    public void removeVideoSegment(String sessionId, String segmentId) {
-        EditSession session = getSession(sessionId);
-        TimelineState timelineState = session.getTimelineState();
-
-        VideoSegment targetSegment = timelineState.getSegments().stream()
-                .filter(segment -> segment.getId().equals(segmentId))
-                .findFirst()
-                .orElseThrow(() -> new RuntimeException("Video segment not found with ID: " + segmentId));
-
-        if (targetSegment.getAudioId() != null) {
-            timelineState.getAudioSegments().removeIf(
-                    audio -> audio.getId().equals(targetSegment.getAudioId())
-            );
+        // Try case-insensitive match
+        for (Map.Entry<String, String> entry : fontMap.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(processedFontFamily)) {
+                System.out.println("Found case-insensitive font match for: " + processedFontFamily);
+                return entry.getValue();
+            }
         }
 
-        timelineState.getSegments().remove(targetSegment);
-        timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(segmentId));
-        session.setLastAccessTime(System.currentTimeMillis());
-    }
-
-    public void removeTextSegment(String sessionId, String segmentId) {
-        EditSession session = getSession(sessionId);
-        TimelineState timelineState = session.getTimelineState();
-
-        boolean removed = timelineState.getTextSegments().removeIf(
-                segment -> segment.getId().equals(segmentId)
-        );
-
-        if (!removed) {
-            throw new RuntimeException("Text segment not found with ID: " + segmentId);
-        }
-
-        session.setLastAccessTime(System.currentTimeMillis());
-    }
-
-    public void setCanvasSize(String sessionId, Integer width, Integer height) {
-        EditSession session = getSession(sessionId);
-        TimelineState timelineState = session.getTimelineState();
-        if (width != null && width > 0) {
-            timelineState.setCanvasWidth(width);
-        }
-        if (height != null && height > 0) {
-            timelineState.setCanvasHeight(height);
-        }
-        session.setLastAccessTime(System.currentTimeMillis());
+        // If the specified font isn't in our map, you might want to try a more elaborate lookup
+        // For example, scanning the Windows fonts directory or using platform-specific APIs
+        // For now, we'll just log this and fallback to Arial
+        System.out.println("Warning: Font family '" + fontFamily + "' not found in font map. Using Arial as fallback.");
+        return defaultFontPath;
     }
 
     public void applyFilter(String sessionId, String segmentId, String filterName, String filterValue) {
@@ -1604,6 +2034,320 @@ public class VideoEditingService {
         }
 
         session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    private String generateVideoFilters(VideoSegment segment, TimelineState timelineState) {
+        StringBuilder filterStr = new StringBuilder();
+        List<Filter> segmentFilters = timelineState.getFilters().stream()
+                .filter(f -> f.getSegmentId().equals(segment.getId()))
+                .toList();
+
+        for (Filter filter : segmentFilters) {
+            String filterName = filter.getFilterName().toLowerCase();
+            String filterValue = filter.getFilterValue();
+            switch (filterName) {
+                // Color Adjustments
+                case "brightness":
+                    filterStr.append("eq=brightness=").append(filterValue).append(",");
+                    break;
+                case "contrast":
+                    filterStr.append("eq=contrast=").append(filterValue).append(",");
+                    break;
+                case "saturation":
+                    filterStr.append("eq=saturation=").append(filterValue).append(",");
+                    break;
+                case "hue":
+                    filterStr.append("hue=h=").append(filterValue).append(",");
+                    break;
+                case "gamma":
+                    filterStr.append("eq=gamma=").append(filterValue).append(",");
+                    break;
+                case "colorbalance":
+                    // Format: "r,g,b" (e.g., "0.1,-0.2,0.3")
+                    String[] rgb = filterValue.split(",");
+                    if (rgb.length == 3) {
+                        filterStr.append("colorbalance=rs=").append(rgb[0])
+                                .append(":gs=").append(rgb[1])
+                                .append(":bs=").append(rgb[2]).append(",");
+                    }
+                    break;
+                case "levels":
+                    // Format: "in_min/in_max/out_min/out_max" (e.g., "0/255/16/235")
+                    String[] levels = filterValue.split("/");
+                    if (levels.length == 4) {
+                        filterStr.append("levels=rimin=").append(levels[0]).append(":rimax=").append(levels[1])
+                                .append(":romin=").append(levels[2]).append(":romax=").append(levels[3]).append(",");
+                    }
+                    break;
+                case "curves":
+                    // Format: "r='0/0 1/1':g='0/0 1/1':b='0/0 1/1'"
+                    filterStr.append("curves=").append(filterValue).append(",");
+                    break;
+
+                // Stylization
+                case "grayscale":
+                    filterStr.append("hue=s=0,");
+                    break;
+                case "sepia":
+                    filterStr.append("colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0,");
+                    break;
+                case "vintage":
+                    filterStr.append("curves=preset=vintage,");
+                    break;
+                case "posterize":
+                    filterStr.append("posterize=").append(filterValue).append(",");
+                    break;
+                case "solarize":
+                    filterStr.append("solarize=threshold=").append(filterValue).append(",");
+                    break;
+                case "invert":
+                    filterStr.append("negate,");
+                    break;
+
+                // Blur and Sharpen
+                case "blur":
+                    filterStr.append("gblur=sigma=").append(filterValue).append(",");
+                    break;
+                case "sharpen":
+                    filterStr.append("unsharp=5:5:").append(filterValue).append(":5:5:0,");
+                    break;
+                case "edge":
+                    filterStr.append("edgedetect=mode=colormix:high=").append(filterValue)
+                            .append(":low=").append(filterValue).append(",");
+                    break;
+
+                // Distortion and Noise
+                case "noise":
+                    filterStr.append("noise=alls=").append(filterValue).append(",");
+                    break;
+                case "vignette":
+                    filterStr.append("vignette=PI/").append(filterValue).append(",");
+                    break;
+                case "pixelize":
+                    // Format: "size" (e.g., "8" for 8x8 blocks)
+                    filterStr.append("pixelize=").append(filterValue).append(":").append(filterValue).append(",");
+                    break;
+
+                // Transformation
+                case "rotate":
+                    filterStr.append("rotate=").append(filterValue).append("*PI/180,");
+                    break;
+                case "flip":
+                    if ("horizontal".equals(filterValue)) {
+                        filterStr.append("hflip,");
+                    } else if ("vertical".equals(filterValue)) {
+                        filterStr.append("vflip,");
+                    }
+                    break;
+                case "crop":
+                    // Format: "width:height:x:y" (e.g., "720:480:0:0")
+                    filterStr.append("crop=").append(filterValue).append(",");
+                    break;
+                case "opacity":
+                    filterStr.append("format=rgba,colorchannelmixer=aa=").append(filterValue).append(",");
+                    break;
+
+                // Special Effects
+                case "emboss":
+                    filterStr.append("convolution='-2 -1 0 -1 1 1 0 1 2',");
+                    break;
+                case "glow":
+                    filterStr.append("gblur=sigma=").append(filterValue).append(":steps=3,");
+                    filterStr.append("blend=all_mode=glow:all_opacity=0.5,");
+                    break;
+                case "overlay":
+                    // Format: "color@opacity" (e.g., "red@0.5")
+                    String[] overlayParts = filterValue.split("@");
+                    if (overlayParts.length == 2) {
+                        filterStr.append("color=").append(overlayParts[0]).append(":s=iwxih[d];")
+                                .append("[v][d]overlay=0:0:enable='between(t,0,9999)':format=rgb,")
+                                .append("colorchannelmixer=aa=").append(overlayParts[1]).append(",");
+                    }
+                    break;
+
+                default:
+                    System.out.println("Unsupported filter: " + filterName);
+            }
+        }
+        if (filterStr.length() > 0 && filterStr.charAt(filterStr.length() - 1) == ',') {
+            filterStr.setLength(filterStr.length() - 1);
+        }
+        return filterStr.toString();
+    }
+
+    private String generateImageFilters(ImageSegment imgSegment, TimelineState timelineState) {
+        StringBuilder filterStr = new StringBuilder();
+
+        // Scaling logic (unchanged)
+        if (imgSegment.getCustomWidth() > 0 || imgSegment.getCustomHeight() > 0) {
+            if (imgSegment.isMaintainAspectRatio()) {
+                if (imgSegment.getCustomWidth() > 0 && imgSegment.getCustomHeight() > 0) {
+                    filterStr.append("scale=").append(imgSegment.getCustomWidth()).append(":")
+                            .append(imgSegment.getCustomHeight()).append(":force_original_aspect_ratio=decrease");
+                } else if (imgSegment.getCustomWidth() > 0) {
+                    filterStr.append("scale=").append(imgSegment.getCustomWidth()).append(":-1");
+                } else {
+                    filterStr.append("scale=-1:").append(imgSegment.getCustomHeight());
+                }
+            } else {
+                int width = imgSegment.getCustomWidth() > 0 ? imgSegment.getCustomWidth() : imgSegment.getWidth();
+                int height = imgSegment.getCustomHeight() > 0 ? imgSegment.getCustomHeight() : imgSegment.getHeight();
+                filterStr.append("scale=").append(width).append(":").append(height);
+            }
+        } else {
+            filterStr.append("scale=").append(imgSegment.getWidth()).append("*")
+                    .append(imgSegment.getScale()).append(":")
+                    .append(imgSegment.getHeight()).append("*")
+                    .append(imgSegment.getScale());
+        }
+
+        List<Filter> segmentFilters = timelineState.getFilters().stream()
+                .filter(f -> f.getSegmentId().equals(imgSegment.getId()))
+                .toList();
+
+        for (Filter filter : segmentFilters) {
+            String filterName = filter.getFilterName().toLowerCase();
+            String filterValue = filter.getFilterValue();
+            switch (filterName) {
+                // Color Adjustments
+                case "brightness":
+                    filterStr.append(",eq=brightness=").append(filterValue);
+                    break;
+                case "contrast":
+                    filterStr.append(",eq=contrast=").append(filterValue);
+                    break;
+                case "saturation":
+                    filterStr.append(",eq=saturation=").append(filterValue);
+                    break;
+                case "hue":
+                    filterStr.append(",hue=h=").append(filterValue);
+                    break;
+                case "gamma":
+                    filterStr.append(",eq=gamma=").append(filterValue);
+                    break;
+                case "colorbalance":
+                    String[] rgb = filterValue.split(",");
+                    if (rgb.length == 3) {
+                        filterStr.append(",colorbalance=rs=").append(rgb[0])
+                                .append(":gs=").append(rgb[1])
+                                .append(":bs=").append(rgb[2]);
+                    }
+                    break;
+                case "levels":
+                    String[] levels = filterValue.split("/");
+                    if (levels.length == 4) {
+                        filterStr.append(",levels=rimin=").append(levels[0]).append(":rimax=").append(levels[1])
+                                .append(":romin=").append(levels[2]).append(":romax=").append(levels[3]);
+                    }
+                    break;
+                case "curves":
+                    filterStr.append(",curves=").append(filterValue);
+                    break;
+
+                // Stylization
+                case "grayscale":
+                    filterStr.append(",hue=s=0");
+                    break;
+                case "sepia":
+                    filterStr.append(",colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0");
+                    break;
+                case "vintage":
+                    filterStr.append(",curves=preset=vintage");
+                    break;
+                case "posterize":
+                    filterStr.append(",posterize=").append(filterValue);
+                    break;
+                case "solarize":
+                    filterStr.append(",solarize=threshold=").append(filterValue);
+                    break;
+                case "invert":
+                    filterStr.append(",negate");
+                    break;
+
+                // Blur and Sharpen
+                case "blur":
+                    filterStr.append(",gblur=sigma=").append(filterValue);
+                    break;
+                case "sharpen":
+                    filterStr.append(",unsharp=5:5:").append(filterValue).append(":5:5:0");
+                    break;
+                case "edge":
+                    filterStr.append(",edgedetect=mode=colormix:high=").append(filterValue)
+                            .append(":low=").append(filterValue);
+                    break;
+
+                // Distortion and Noise
+                case "noise":
+                    filterStr.append(",noise=alls=").append(filterValue).append(":allf=t");
+                    break;
+                case "vignette":
+                    filterStr.append(",vignette=PI/").append(filterValue);
+                    break;
+                case "pixelize":
+                    filterStr.append(",pixelize=").append(filterValue).append(":").append(filterValue);
+                    break;
+
+                // Transformation
+                case "rotate":
+                    filterStr.append(",rotate=").append(filterValue).append("*PI/180");
+                    break;
+                case "flip":
+                    if ("horizontal".equals(filterValue)) {
+                        filterStr.append(",hflip");
+                    } else if ("vertical".equals(filterValue)) {
+                        filterStr.append(",vflip");
+                    }
+                    break;
+                case "crop":
+                    filterStr.append(",crop=").append(filterValue);
+                    break;
+                case "opacity":
+                    filterStr.append(",format=rgba,colorchannelmixer=aa=").append(filterValue);
+                    break;
+
+                // Special Effects
+                case "emboss":
+                    filterStr.append(",convolution='-2 -1 0 -1 1 1 0 1 2'");
+                    break;
+                case "glow":
+                    filterStr.append(",gblur=sigma=").append(filterValue).append(":steps=3");
+                    filterStr.append(",blend=all_mode=glow:all_opacity=0.5");
+                    break;
+                case "overlay":
+                    String[] overlayParts = filterValue.split("@");
+                    if (overlayParts.length == 2) {
+                        filterStr.append(",color=").append(overlayParts[0]).append(":s=iwxih[d];")
+                                .append("[v][d]overlay=0:0:enable='between(t,0,9999)':format=rgb,")
+                                .append("colorchannelmixer=aa=").append(overlayParts[1]);
+                    }
+                    break;
+
+                default:
+                    System.out.println("Unsupported filter: " + filterName);
+            }
+        }
+
+        return filterStr.toString();
+    }
+
+    public List<Filter> getFiltersForSegment(String sessionId, String segmentId) {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
+
+        // Check if the segment exists in any of the segment types
+        boolean segmentExists = timelineState.getSegments().stream().anyMatch(s -> s.getId().equals(segmentId)) ||
+                timelineState.getImageSegments().stream().anyMatch(s -> s.getId().equals(segmentId)) ||
+                timelineState.getTextSegments().stream().anyMatch(s -> s.getId().equals(segmentId)) ||
+                timelineState.getAudioSegments().stream().anyMatch(s -> s.getId().equals(segmentId));
+
+        if (!segmentExists) {
+            throw new RuntimeException("Segment not found with ID: " + segmentId);
+        }
+
+        // Return filters associated with the segment
+        return timelineState.getFilters().stream()
+                .filter(f -> f.getSegmentId().equals(segmentId))
+                .collect(Collectors.toList());
     }
 
     public void updateFilter(String sessionId, String segmentId, String filterId, String filterName, String filterValue) {
@@ -1702,23 +2446,4 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
-    public List<Filter> getFiltersForSegment(String sessionId, String segmentId) {
-        EditSession session = getSession(sessionId);
-        TimelineState timelineState = session.getTimelineState();
-
-        // Check if the segment exists in any of the segment types
-        boolean segmentExists = timelineState.getSegments().stream().anyMatch(s -> s.getId().equals(segmentId)) ||
-                timelineState.getImageSegments().stream().anyMatch(s -> s.getId().equals(segmentId)) ||
-                timelineState.getTextSegments().stream().anyMatch(s -> s.getId().equals(segmentId)) ||
-                timelineState.getAudioSegments().stream().anyMatch(s -> s.getId().equals(segmentId));
-
-        if (!segmentExists) {
-            throw new RuntimeException("Segment not found with ID: " + segmentId);
-        }
-
-        // Return filters associated with the segment
-        return timelineState.getFilters().stream()
-                .filter(f -> f.getSegmentId().equals(segmentId))
-                .collect(Collectors.toList());
-    }
 }

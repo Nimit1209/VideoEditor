@@ -915,4 +915,33 @@ public class ProjectController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
+
+
+    @DeleteMapping("/{projectId}")
+    public ResponseEntity<?> deleteProject(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId) {
+        try {
+            User user = getUserFromToken(token);
+            Project project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+
+            if (!project.getUser().getId().equals(user.getId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body("Unauthorized to delete this project");
+            }
+
+            // Delete associated files
+            videoEditingService.deleteProjectFiles(projectId);
+            // Delete project from database
+            projectRepository.delete(project);
+            return ResponseEntity.ok().body("Project deleted successfully");
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error deleting project: " + e.getMessage());
+        }
+    }
 }
