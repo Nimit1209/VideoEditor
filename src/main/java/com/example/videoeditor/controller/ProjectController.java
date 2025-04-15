@@ -62,7 +62,10 @@ public class ProjectController {
         Integer height = request.get("height") != null ?
                 ((Number) request.get("height")).intValue() : 1080;
 
-        Project project = videoEditingService.createProject(user, name, width, height);
+        Float fps = request.get("fps") != null ?
+                ((Number) request.get("fps")).floatValue() : null;
+
+        Project project = videoEditingService.createProject(user, name, width, height, fps);
         return ResponseEntity.ok(project);
     }
 
@@ -134,7 +137,7 @@ public class ProjectController {
             Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
             Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : null;
             Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
-            Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null; // Added opacity
+            Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null;
 
             // Validate required parameters
             if (videoPath == null) {
@@ -159,8 +162,8 @@ public class ProjectController {
             TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
             VideoSegment addedVideoSegment = timelineState.getSegments().stream()
                     .filter(s -> s.getSourceVideoPath().equals(videoPath) &&
-                            (startTime == null || s.getStartTime() == startTime) &&  // Use == instead of .equals()
-                            (timelineStartTime == null || s.getTimelineStartTime() == timelineStartTime))  // Use == instead of .equals()
+                            (startTime == null || s.getStartTime() == startTime) &&
+                            (timelineStartTime == null || s.getTimelineStartTime() == timelineStartTime))
                     .findFirst()
                     .orElseThrow(() -> new RuntimeException("Failed to find added video segment"));
             AudioSegment addedAudioSegment = timelineState.getAudioSegments().stream()
@@ -169,14 +172,14 @@ public class ProjectController {
                     .orElse(null);
 
             // Prepare response
-            Map<String, String> response = new HashMap<>();
+            Map<String, Object> response = new HashMap<>(); // Changed to Map<String, Object> to support Integer
             response.put("videoSegmentId", addedVideoSegment.getId());
             if (addedAudioSegment != null) {
                 response.put("audioSegmentId", addedAudioSegment.getId());
+                response.put("audioLayer", addedAudioSegment.getLayer()); // NEW: Include audio layer
             }
 
-            // Note: Opacity is set to default (1.0) in the service if not provided, no need to pass it here explicitly
-            return ResponseEntity.ok().build();
+            return ResponseEntity.ok(response); // Updated to return response map
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding video to timeline: " + e.getMessage());

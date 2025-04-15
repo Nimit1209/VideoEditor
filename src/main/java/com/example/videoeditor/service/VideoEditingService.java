@@ -155,7 +155,7 @@ public class VideoEditingService {
         project.setAudioJson(objectMapper.writeValueAsString(audioFiles));
     }
 
-    public Project createProject(User user, String name, Integer width, Integer height) throws JsonProcessingException {
+    public Project createProject(User user, String name, Integer width, Integer height, Float fps) throws JsonProcessingException {
         Project project = new Project();
         project.setUser(user);
         project.setName(name);
@@ -163,6 +163,7 @@ public class VideoEditingService {
         project.setLastModified(LocalDateTime.now());
         project.setWidth(width != null ? width : 1920); // Default: 1920
         project.setHeight(height != null ? height : 1080); // Default: 1080
+        project.setFps(fps != null ? fps : 25.0f);
         project.setTimelineState(objectMapper.writeValueAsString(new TimelineState()));
         return projectRepository.save(project);
     }
@@ -227,7 +228,7 @@ public class VideoEditingService {
                 .orElseThrow(() -> new RuntimeException("No active session found"));
     }
 
-    // Updated to reuse extracted audio files as per the proposed solution
+    // Updated addVideoToTimeline method
     public void addVideoToTimeline(
             String sessionId,
             String videoPath,
@@ -261,7 +262,7 @@ public class VideoEditingService {
         startTime = startTime != null ? startTime : 0.0;
         endTime = endTime != null ? endTime : fullDuration;
 
-        // MODIFIED: Round time fields to three decimal places
+        // Round time fields to three decimal places
         startTime = roundToThreeDecimals(startTime);
         endTime = roundToThreeDecimals(endTime);
         timelineStartTime = roundToThreeDecimals(timelineStartTime);
@@ -269,6 +270,7 @@ public class VideoEditingService {
         if (timelineEndTime == null) {
             timelineEndTime = timelineStartTime + (endTime - startTime);
         }
+        timelineEndTime = roundToThreeDecimals(timelineEndTime);
 
         if (!session.getTimelineState().isTimelinePositionAvailable(timelineStartTime, timelineEndTime, layer)) {
             throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + layer);
@@ -315,6 +317,7 @@ public class VideoEditingService {
             projectRepository.save(project);
         }
         // --- End of Audio Reuse Logic ---
+
         VideoSegment segment = new VideoSegment();
         segment.setSourceVideoPath(videoPath);
         segment.setStartTime(startTime);
@@ -329,17 +332,14 @@ public class VideoEditingService {
 
         AudioSegment audioSegment = new AudioSegment();
         audioSegment.setAudioPath(audioPath);
-        audioSegment.setLayer(-1);
-        // MODIFIED: Set rounded time fields for audio segment
+        // NEW: Assign an available audio layer
+        int audioLayer = findAvailableAudioLayer(session.getTimelineState(), timelineStartTime, timelineEndTime);
+        audioSegment.setLayer(audioLayer);
         audioSegment.setStartTime(startTime);
         audioSegment.setEndTime(endTime);
         audioSegment.setTimelineStartTime(timelineStartTime);
         audioSegment.setTimelineEndTime(timelineEndTime);
         audioSegment.setVolume(1.0);
-
-        if (!session.getTimelineState().isTimelinePositionAvailable(timelineStartTime, timelineEndTime, -1)) {
-            throw new RuntimeException("Timeline position overlaps with an existing audio segment in layer -1");
-        }
 
         segment.setAudioId(audioSegment.getId());
 
@@ -350,6 +350,24 @@ public class VideoEditingService {
         session.getTimelineState().getSegments().add(segment);
         session.getTimelineState().getAudioSegments().add(audioSegment);
         session.setLastAccessTime(System.currentTimeMillis());
+    }
+    // NEW: Helper method to find an available audio layer
+    private int findAvailableAudioLayer(TimelineState timelineState, double timelineStartTime, double timelineEndTime) {
+        int layer = -1; // Start with layer -1
+        while (true) {
+            final int currentLayer = layer;
+            boolean hasOverlap = timelineState.getAudioSegments().stream()
+                    .filter(a -> a.getLayer() == currentLayer)
+                    .anyMatch(a -> {
+                        double existingStart = a.getTimelineStartTime();
+                        double existingEnd = a.getTimelineEndTime();
+                        return timelineStartTime < existingEnd && timelineEndTime > existingStart;
+                    });
+            if (!hasOverlap) {
+                return currentLayer;
+            }
+            layer--; // Try next layer (-2, -3, etc.)
+        }
     }
 
     private String extractAudioFromVideo(String videoPath, Long projectId) throws IOException, InterruptedException {
@@ -1346,7 +1364,7 @@ public class VideoEditingService {
         }
 
         // Render the final video
-        String exportedVideoPath = renderFinalVideo(session.getTimelineState(), outputPath, project.getWidth(), project.getHeight());
+        String exportedVideoPath = renderFinalVideo(session.getTimelineState(), outputPath, project.getWidth(), project.getHeight(), project.getFps());
 
         // Update project status to exported
         project.setStatus("EXPORTED");
@@ -1368,7 +1386,7 @@ public class VideoEditingService {
         return new File(exportedVideoPath);
     }
 
-    private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight)
+    private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight, Float fps)
             throws IOException, InterruptedException {
         System.out.println("Rendering final video to: " + outputPath);
 
@@ -1451,20 +1469,151 @@ public class VideoEditingService {
                 // Shift timestamps to align with timelineStartTime
                 filterComplex.append("setpts=PTS-STARTPTS+").append(vs.getTimelineStartTime()).append("/TB,");
 
-                // Apply filters (saturation, blur, hue)
+                // Apply all filters
                 List<Filter> segmentFilters = timelineState.getFilters().stream()
                         .filter(f -> f.getSegmentId().equals(vs.getId()))
                         .collect(Collectors.toList());
                 for (Filter filter : segmentFilters) {
-                    switch (filter.getFilterName().toLowerCase()) {
-                        case "saturation":
-                            filterComplex.append("eq=saturation=").append(filter.getFilterValue()).append(",");
+                    // Skip invalid filters
+                    if (filter == null || filter.getFilterName() == null || filter.getFilterName().trim().isEmpty()) {
+                        System.err.println("Skipping invalid filter for segment " + vs.getId() + ": null or empty filter name");
+                        continue;
+                    }
+                    String filterName = filter.getFilterName().toLowerCase().trim();
+                    String filterValue = filter.getFilterValue() != null ? String.valueOf(filter.getFilterValue()) : "";
+                    // Skip if filterValue is null or empty for non-toggle filters
+                    if (filterValue.isEmpty() && !Arrays.asList("grayscale", "sepia", "vintage", "invert", "emboss").contains(filterName)) {
+                        System.err.println("Skipping filter " + filterName + " for segment " + vs.getId() + ": empty filter value");
+                        continue;
+                    }
+                    switch (filterName) {
+                        case "brightness":
+                            filterComplex.append("eq=brightness=").append(filterValue).append(",");
                             break;
-                        case "blur":
-                            filterComplex.append("gblur=sigma=").append(filter.getFilterValue()).append(",");
+                        case "contrast":
+                            filterComplex.append("eq=contrast=").append(filterValue).append(",");
+                            break;
+                        case "saturation":
+                            filterComplex.append("eq=saturation=").append(filterValue).append(",");
                             break;
                         case "hue":
-                            filterComplex.append("hue=h=").append(filter.getFilterValue()).append(",");
+                            filterComplex.append("hue=h=").append(filterValue).append(",");
+                            break;
+                        case "gamma":
+                            filterComplex.append("eq=gamma=").append(filterValue).append(",");
+                            break;
+                        case "colorbalance":
+                            // Expect filterValue as "r,g,b"
+                            String[] rgb = filterValue.split(",");
+                            if (rgb.length == 3) {
+                                filterComplex.append("colorbalance=rs=").append(rgb[0])
+                                        .append(":gs=").append(rgb[1])
+                                        .append(":bs=").append(rgb[2]).append(",");
+                            }
+                            break;
+                        case "blur":
+                            filterComplex.append("gblur=sigma=").append(filterValue).append(",");
+                            break;
+                        case "sharpen":
+                            // Map sharpen to unsharp filter
+                            double sharpenValue = Double.parseDouble(filterValue);
+                            String amount = sharpenValue >= 0 ? String.valueOf(sharpenValue) : String.valueOf(-sharpenValue);
+                            filterComplex.append("unsharp=lx=5:ly=5:la=").append(amount).append(",");
+                            break;
+                        case "edge":
+                            filterComplex.append("edgedetect=low=").append(filterValue)
+                                    .append(":high=").append(Double.parseDouble(filterValue) * 2).append(",");
+                            break;
+                        case "grayscale":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("hue=s=0,");
+                            }
+                            break;
+                        case "sepia":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("colorchannelmixer=.393:.769:.189:.349:.686:.168:.272:.534:.131,");
+                            }
+                            break;
+                        case "vintage":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("curves=preset=vintage,");
+                            }
+                            break;
+                        case "posterize":
+                            // Simulate posterization by quantizing colors
+                            int levels = Integer.parseInt(filterValue);
+                            // Map levels (2-32) to quantization steps
+                            double step = 255.0 / (levels - 1);
+                            filterComplex.append("eq=r='floor(r*").append(levels).append("/256)*").append(step)
+                                    .append(":g=floor(g*").append(levels).append("/256)*").append(step)
+                                    .append(":b=floor(b*").append(levels).append("/256)*").append(step).append("',");
+                            break;
+                        case "solarize":
+                            // Simulate solarization using lutrgb
+                            double threshold = Double.parseDouble(filterValue) * 255;
+                            filterComplex.append("lutrgb=r='if(gt(val,").append(threshold).append("),255-val,val)':")
+                                    .append("g='if(gt(val,").append(threshold).append("),255-val,val)':")
+                                    .append("b='if(gt(val,").append(threshold).append("),255-val,val)',");
+                            break;
+                        case "invert":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("negate,");
+                            }
+                            break;
+                        case "noise":
+                            filterComplex.append("noise=alls=").append(filterValue).append(":allf=t+u,");
+                            break;
+                        case "vignette":
+                            filterComplex.append("vignette=angle=PI/").append(filterValue).append(",");
+                            break;
+                        case "pixelize":
+                            int blockSize = Integer.parseInt(filterValue);
+                            filterComplex.append("pixelize=pw=").append(blockSize)
+                                    .append(":ph=").append(blockSize).append(":mode=average,");
+                            break;
+                        case "rotate":
+                            double angleRad = Math.toRadians(Double.parseDouble(filterValue));
+                            filterComplex.append("rotate=").append(angleRad).append(":c=black,");
+                            break;
+                        case "flip":
+                            if (filterValue.equals("horizontal")) {
+                                filterComplex.append("hflip,");
+                            } else if (filterValue.equals("vertical")) {
+                                filterComplex.append("vflip,");
+                            }
+                            break;
+                        case "opacity":
+                            filterComplex.append("format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='a(X,Y)*").append(filterValue).append("',");
+                            break;
+                        case "emboss":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("convolution='0 -1 0 -1 5 -1 0 -1 0':normalize=0,");
+                            }
+                            break;
+                        case "glow":
+                            // Simulate glow using boxblur and blend
+                            double glowRadius = Double.parseDouble(filterValue);
+                            if (glowRadius > 0) {
+                                filterComplex.append("[tmp];[tmp]boxblur=").append(glowRadius / 2).append(":1[tmpblur];")
+                                        .append("[tmp][tmpblur]blend=all_mode=screen:all_opacity=0.5[tmp],");
+                            }
+                            break;
+                        case "overlay":
+                            // Expect filterValue as "color@opacity"
+                            String[] overlayParts = filterValue.split("@");
+                            if (overlayParts.length == 2) {
+                                String color = overlayParts[0];
+                                String opacity = overlayParts[1];
+                                filterComplex.append("[tmp];color=c=").append(color)
+                                        .append(":s=").append(canvasWidth).append("x").append(canvasHeight)
+                                        .append(":d=").append(totalDuration).append("[ovcolor];")
+                                        .append("[tmp][ovcolor]overlay=0:0:format=auto:alpha=blend:enable='between(t,")
+                                        .append(vs.getTimelineStartTime()).append(",").append(vs.getTimelineEndTime())
+                                        .append(")'[tmp],");
+                            }
+                            break;
+                        default:
+                            System.err.println("Unsupported filter: " + filterName + " for segment " + vs.getId());
                             break;
                     }
                 }
@@ -1487,7 +1636,6 @@ public class VideoEditingService {
                         double kfValue = ((Number) kf.getValue()).doubleValue();
 
                         if (kfTime > prevTime) {
-                            // Adjust times to timeline
                             double timelinePrevTime = vs.getTimelineStartTime() + prevTime;
                             double timelineKfTime = vs.getTimelineStartTime() + kfTime;
                             scaleExpr.insert(0, "lerp(").append(",").append(kfValue)
@@ -1560,7 +1708,7 @@ public class VideoEditingService {
                     }
                     yExpr.insert(0, "(").append("+(H-h)/2-h/2*(").append(scaleExpr).append("-1))");
                 } else {
-                    yExpr.append("(H-h)/2+").append(baseY).append("-h/2*(").append(scaleExpr).append("-1)");
+                    yExpr.append("(H-h)/2+").append(baseY).append("-w/2*(").append(scaleExpr).append("-1)");
                 }
 
                 // Overlay the scaled video onto the previous output
@@ -1578,19 +1726,151 @@ public class VideoEditingService {
                 filterComplex.append("trim=0:").append(segmentDuration).append(",");
                 filterComplex.append("setpts=PTS-STARTPTS,");
 
+                // Apply all filters
                 List<Filter> segmentFilters = timelineState.getFilters().stream()
                         .filter(f -> f.getSegmentId().equals(is.getId()))
                         .collect(Collectors.toList());
                 for (Filter filter : segmentFilters) {
-                    switch (filter.getFilterName().toLowerCase()) {
-                        case "saturation":
-                            filterComplex.append("eq=saturation=").append(filter.getFilterValue()).append(",");
+                    // Skip invalid filters
+                    if (filter == null || filter.getFilterName() == null || filter.getFilterName().trim().isEmpty()) {
+                        System.err.println("Skipping invalid filter for segment " + is.getId() + ": null or empty filter name");
+                        continue;
+                    }
+                    String filterName = filter.getFilterName().toLowerCase().trim();
+                    String filterValue = filter.getFilterValue() != null ? String.valueOf(filter.getFilterValue()) : "";
+                    // Skip if filterValue is empty for non-toggle filters
+                    if (filterValue.isEmpty() && !Arrays.asList("grayscale", "sepia", "vintage", "invert", "emboss").contains(filterName)) {
+                        System.err.println("Skipping filter " + filterName + " for segment " + is.getId() + ": empty filter value");
+                        continue;
+                    }
+                    switch (filterName) {
+                        case "brightness":
+                            filterComplex.append("eq=brightness=").append(filterValue).append(",");
                             break;
-                        case "blur":
-                            filterComplex.append("gblur=sigma=").append(filter.getFilterValue()).append(",");
+                        case "contrast":
+                            filterComplex.append("eq=contrast=").append(filterValue).append(",");
+                            break;
+                        case "saturation":
+                            filterComplex.append("eq=saturation=").append(filterValue).append(",");
                             break;
                         case "hue":
-                            filterComplex.append("hue=h=").append(filter.getFilterValue()).append(",");
+                            filterComplex.append("hue=h=").append(filterValue).append(",");
+                            break;
+                        case "gamma":
+                            filterComplex.append("eq=gamma=").append(filterValue).append(",");
+                            break;
+                        case "colorbalance":
+                            // Expect filterValue as "r,g,b"
+                            String[] rgb = filterValue.split(",");
+                            if (rgb.length == 3) {
+                                filterComplex.append("colorbalance=rs=").append(rgb[0])
+                                        .append(":gs=").append(rgb[1])
+                                        .append(":bs=").append(rgb[2]).append(",");
+                            }
+                            break;
+                        case "blur":
+                            filterComplex.append("gblur=sigma=").append(filterValue).append(",");
+                            break;
+                        case "sharpen":
+                            // Map sharpen to unsharp filter
+                            double sharpenValue = Double.parseDouble(filterValue);
+                            String amount = sharpenValue >= 0 ? String.valueOf(sharpenValue) : String.valueOf(-sharpenValue);
+                            filterComplex.append("unsharp=lx=5:ly=5:la=").append(amount).append(",");
+                            break;
+                        case "edge":
+                            filterComplex.append("edgedetect=low=").append(filterValue)
+                                    .append(":high=").append(Double.parseDouble(filterValue) * 2).append(",");
+                            break;
+                        case "grayscale":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("hue=s=0,");
+                            }
+                            break;
+                        case "sepia":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("colorchannelmixer=.393:.769:.189:.349:.686:.168:.272:.534:.131,");
+                            }
+                            break;
+                        case "vintage":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("curves=preset=vintage,");
+                            }
+                            break;
+                        case "posterize":
+                            // Simulate posterization by quantizing colors
+                            int levels = Integer.parseInt(filterValue);
+                            // Map levels (2-32) to quantization steps
+                            double step = 255.0 / (levels - 1);
+                            filterComplex.append("eq=r='floor(r*").append(levels).append("/256)*").append(step)
+                                    .append(":g=floor(g*").append(levels).append("/256)*").append(step)
+                                    .append(":b=floor(b*").append(levels).append("/256)*").append(step).append("',");
+                            break;
+                        case "solarize":
+                            // Simulate solarization using lutrgb
+                            double threshold = Double.parseDouble(filterValue) * 255;
+                            filterComplex.append("lutrgb=r='if(gt(val,").append(threshold).append("),255-val,val)':")
+                                    .append("g='if(gt(val,").append(threshold).append("),255-val,val)':")
+                                    .append("b='if(gt(val,").append(threshold).append("),255-val,val)',");
+                            break;
+                        case "invert":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("negate,");
+                            }
+                            break;
+                        case "noise":
+                            filterComplex.append("noise=alls=").append(filterValue).append(":allf=t+u,");
+                            break;
+                        case "vignette":
+                            filterComplex.append("vignette=angle=PI/").append(filterValue).append(",");
+                            break;
+                        case "pixelize":
+                            int blockSize = Integer.parseInt(filterValue);
+                            filterComplex.append("pixelize=pw=").append(blockSize)
+                                    .append(":ph=").append(blockSize).append(":mode=average,");
+                            break;
+                        case "rotate":
+                            double angleRad = Math.toRadians(Double.parseDouble(filterValue));
+                            filterComplex.append("rotate=").append(angleRad).append(":c=black,");
+                            break;
+                        case "flip":
+                            if (filterValue.equals("horizontal")) {
+                                filterComplex.append("hflip,");
+                            } else if (filterValue.equals("vertical")) {
+                                filterComplex.append("vflip,");
+                            }
+                            break;
+                        case "opacity":
+                            filterComplex.append("format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='a(X,Y)*").append(filterValue).append("',");
+                            break;
+                        case "emboss":
+                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                filterComplex.append("convolution='0 -1 0 -1 5 -1 0 -1 0':normalize=0,");
+                            }
+                            break;
+                        case "glow":
+                            // Simulate glow using boxblur and blend
+                            double glowRadius = Double.parseDouble(filterValue);
+                            if (glowRadius > 0) {
+                                filterComplex.append("[tmp];[tmp]boxblur=").append(glowRadius / 2).append(":1[tmpblur];")
+                                        .append("[tmp][tmpblur]blend=all_mode=screen:all_opacity=0.5[tmp],");
+                            }
+                            break;
+                        case "overlay":
+                            // Expect filterValue as "color@opacity"
+                            String[] overlayParts = filterValue.split("@");
+                            if (overlayParts.length == 2) {
+                                String color = overlayParts[0];
+                                String opacity = overlayParts[1];
+                                filterComplex.append("[tmp];color=c=").append(color)
+                                        .append(":s=").append(canvasWidth).append("x").append(canvasHeight)
+                                        .append(":d=").append(totalDuration).append("[ovcolor];")
+                                        .append("[tmp][ovcolor]overlay=0:0:format=auto:alpha=blend:enable='between(t,")
+                                        .append(is.getTimelineStartTime()).append(",").append(is.getTimelineEndTime())
+                                        .append(")'[tmp],");
+                            }
+                            break;
+                        default:
+                            System.err.println("Unsupported filter: " + filterName + " for segment " + is.getId());
                             break;
                     }
                 }
@@ -1613,7 +1893,6 @@ public class VideoEditingService {
                         double kfValue = ((Number) kf.getValue()).doubleValue();
 
                         if (kfTime > prevTime) {
-                            // Adjust times to timeline
                             double timelinePrevTime = is.getTimelineStartTime() + prevTime;
                             double timelineKfTime = is.getTimelineStartTime() + kfTime;
                             scaleExpr.insert(0, "lerp(").append(",").append(kfValue)
@@ -1653,10 +1932,8 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    // Center the image and adjust for scaling
                     xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
                 } else {
-                    // Center the image with offset and adjust for scaling
                     xExpr.append("(W-w)/2+").append(baseX).append("-w/2*(").append(scaleExpr).append("-1)");
                 }
 
@@ -1686,10 +1963,8 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    // Center the image and adjust for scaling
-                    yExpr.insert(0, "(").append("+(H-h)/2-h/2*(").append(scaleExpr).append("-1))");
+                    xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
                 } else {
-                    // Center the image with offset and adjust for scaling
                     yExpr.append("(H-h)/2+").append(baseY).append("-h/2*(").append(scaleExpr).append("-1)");
                 }
 
@@ -1908,6 +2183,8 @@ public class VideoEditingService {
         command.add("48000");
         command.add("-t");
         command.add(String.valueOf(totalDuration));
+        command.add("-r");
+        command.add(String.valueOf(fps));
         command.add("-y");
         command.add(outputPath);
 

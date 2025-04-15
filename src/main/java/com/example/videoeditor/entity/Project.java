@@ -1,15 +1,8 @@
 package com.example.videoeditor.entity;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import lombok.Data;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 @Entity
 @Table(name = "projects")
@@ -38,9 +31,16 @@ public class Project {
     private Integer width;
     private Integer height;
 
+    @Column(nullable = false, columnDefinition = "FLOAT DEFAULT 25.0")
+    private Float fps = 25.0f; // New field for FPS with default 25
+
     private String exportedVideoPath;
 
-//    Videos Column
+    public String getExportedVideoPath() {
+        return exportedVideoPath;
+    }
+
+    //    Videos Column
     @Column(columnDefinition = "TEXT")
     private String videosJson; // Stores a JSON array of video data
 
@@ -49,37 +49,9 @@ public class Project {
     private String imagesJson; // Stores a JSON array of image data
 
 
-//    Audio column
+    //    Audio column
     @Column(columnDefinition = "TEXT")
     private String audioJson; // Stores a JSON array of audio data
-
-    public String getVideosJson() {
-        return videosJson;
-    }
-
-    public void setVideosJson(String videosJson) {
-        this.videosJson = videosJson;
-    }
-
-    public String getImagesJson() {
-        return imagesJson;
-    }
-
-    public void setImagesJson(String imagesJson) {
-        this.imagesJson = imagesJson;
-    }
-
-    public String getAudioJson() {
-        return audioJson;
-    }
-
-    public void setAudioJson(String audioJson) {
-        this.audioJson = audioJson;
-    }
-
-    public String getExportedVideoPath() {
-        return exportedVideoPath;
-    }
 
     public void setExportedVideoPath(String exportedVideoPath) {
         this.exportedVideoPath = exportedVideoPath;
@@ -149,4 +121,35 @@ public class Project {
         this.timelineState = timelineState;
     }
 
+    public String getVideosJson() {
+        return videosJson;
+    }
+
+    public void setVideosJson(String videosJson) {
+        this.videosJson = videosJson;
+    }
+
+    public String getImagesJson() {
+        return imagesJson;
+    }
+
+    public void setImagesJson(String imagesJson) {
+        this.imagesJson = imagesJson;
+    }
+
+    public String getAudioJson() {
+        return audioJson;
+    }
+
+    public void setAudioJson(String audioJson) {
+        this.audioJson = audioJson;
+    }
+
+    public Float getFps() {
+        return fps;
+    }
+
+    public void setFps(Float fps) {
+        this.fps = fps;
+    }
 }
