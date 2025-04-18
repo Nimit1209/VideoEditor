@@ -15,11 +15,20 @@ public class TimelineState {
     private List<Filter> filters = new ArrayList<>();
     private Integer canvasWidth;
     private Integer canvasHeight;
+    private List<Transition> transitions = new ArrayList<>(); // NEW: List of transitions
 
     public TimelineState() {
         this.segments = new ArrayList<>();
         this.metadata = new HashMap<>();
         this.textSegments = new ArrayList<>();
+    }
+
+    public List<Transition> getTransitions() {
+        return transitions;
+    }
+
+    public void setTransitions(List<Transition> transitions) {
+        this.transitions = transitions;
     }
 
     // Getters and setters (unchanged)

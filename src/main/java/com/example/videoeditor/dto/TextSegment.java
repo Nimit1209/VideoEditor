@@ -5,7 +5,7 @@ import lombok.Data;
 import java.util.*;
 
 @Data
-public class TextSegment {
+public class TextSegment implements Segment {
     private String id = UUID.randomUUID().toString();
     private String text;
     private String fontFamily = "ARIAL";
@@ -17,7 +17,7 @@ public class TextSegment {
     private Double opacity = 1.0; // Added opacity with default value 1.0
     private double timelineStartTime;
     private double timelineEndTime;
-    private int layer = 0;
+    private Integer layer = 0;
 
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
 
@@ -43,7 +43,26 @@ public class TextSegment {
         }
     }
 
-    public String getId() { return id; }
+    @Override
+    public String getId() {
+        return id;
+    }
+
+    @Override
+    public Integer getLayer() {
+        return layer;
+    }
+
+    @Override
+    public double getTimelineStartTime() {
+        return timelineStartTime;
+    }
+
+    @Override
+    public double getTimelineEndTime() {
+        return timelineEndTime;
+    }
+
     public void setId(String id) { this.id = id; }
     public String getText() { return text; }
     public void setText(String text) { this.text = text; }
@@ -61,10 +80,7 @@ public class TextSegment {
     public void setPositionY(Integer positionY) { this.positionY = positionY; }
     public Double getOpacity() { return opacity; } // Added getter
     public void setOpacity(Double opacity) { this.opacity = opacity; } // Added setter
-    public double getTimelineStartTime() { return timelineStartTime; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
-    public double getTimelineEndTime() { return timelineEndTime; }
     public void setTimelineEndTime(double timelineEndTime) { this.timelineEndTime = timelineEndTime; }
-    public int getLayer() { return layer; }
     public void setLayer(int layer) { this.layer = layer; }
 }

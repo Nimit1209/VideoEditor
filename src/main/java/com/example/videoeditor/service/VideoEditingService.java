@@ -1,7 +1,7 @@
 package com.example.videoeditor.service;
 
-import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.dto.*;
+import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.EditedVideoRepository;
 import com.example.videoeditor.repository.ProjectRepository;
@@ -9,6 +9,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -30,8 +32,8 @@ public class VideoEditingService {
     private final ObjectMapper objectMapper;
     private final Map<String, EditSession> activeSessions;
 
-    private final String ffmpegPath = "C:\\Users\\raj.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffmpeg.exe";
-    private final String baseDir = "D:\\Backend\\videoEditor-main"; // Base directory constant
+    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
+    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
 
     public VideoEditingService(
             ProjectRepository projectRepository,
@@ -155,6 +157,25 @@ public class VideoEditingService {
         project.setAudioJson(objectMapper.writeValueAsString(audioFiles));
     }
 
+    // Get extracted audio metadata from project
+    public List<Map<String, String>> getExtractedAudio(Project project) throws JsonProcessingException {
+        if (project.getExtractedAudioJson() == null || project.getExtractedAudioJson().isEmpty()) {
+            return new ArrayList<>();
+        }
+        return objectMapper.readValue(project.getExtractedAudioJson(), new TypeReference<List<Map<String, String>>>() {});
+    }
+
+    // Add extracted audio metadata to project
+    public void addExtractedAudio(Project project, String audioPath, String audioFileName, String sourceVideoPath) throws JsonProcessingException {
+        List<Map<String, String>> extractedAudio = getExtractedAudio(project);
+        Map<String, String> audioData = new HashMap<>();
+        audioData.put("audioPath", audioPath);
+        audioData.put("audioFileName", audioFileName);
+        audioData.put("sourceVideoPath", sourceVideoPath);
+        extractedAudio.add(audioData);
+        project.setExtractedAudioJson(objectMapper.writeValueAsString(extractedAudio));
+    }
+
     public Project createProject(User user, String name, Integer width, Integer height, Float fps) throws JsonProcessingException {
         Project project = new Project();
         project.setUser(user);
@@ -236,11 +257,9 @@ public class VideoEditingService {
             Double timelineStartTime,
             Double timelineEndTime,
             Double startTime,
-            Double endTime
+            Double endTime,
+            boolean createAudioSegment // New parameter
     ) throws IOException, InterruptedException {
-        System.out.println("addVideoToTimeline called with sessionId: " + sessionId);
-        System.out.println("Video path: " + videoPath);
-
         EditSession session = getSession(sessionId);
         if (session == null) {
             throw new RuntimeException("No active session found for sessionId: " + sessionId);
@@ -280,27 +299,31 @@ public class VideoEditingService {
             throw new RuntimeException("Invalid startTime or endTime for video segment");
         }
 
-        // --- Start of Audio Reuse Logic ---
         Project project = projectRepository.findById(session.getProjectId())
                 .orElseThrow(() -> new RuntimeException("Project not found"));
         String audioPath = null;
+        AudioSegment audioSegment = null;
 
-        // Check if the video already has an extracted audio file in videosJson
-        List<Map<String, String>> videos = getVideos(project);
-        for (Map<String, String> video : videos) {
-            if (video.get("videoPath").equals(videoPath) && video.containsKey("audioPath")) {
-                audioPath = video.get("audioPath");
-                System.out.println("Reusing existing audio file: " + audioPath);
-                break;
+        if (createAudioSegment) {
+            String videoFileName = new File(videoPath).getName();
+            String audioFileName = "extracted_" + videoFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".mp3";
+            File projectAudioDir = new File(baseDir, "audio/projects/" + session.getProjectId() + "/extracted");
+            File audioFile = new File(projectAudioDir, audioFileName);
+
+            List<Map<String, String>> extractedAudio = getExtractedAudio(project);
+            boolean audioExists = extractedAudio.stream()
+                    .anyMatch(audio -> audio.get("sourceVideoPath").equals(videoPath) && audio.get("audioFileName").equals(audioFileName));
+
+            if (audioExists && audioFile.exists()) {
+                System.out.println("Reusing existing audio file: " + audioFile.getAbsolutePath());
+                audioPath = "audio/projects/" + session.getProjectId() + "/extracted/" + audioFileName;
+            } else {
+                audioPath = extractAudioFromVideo(videoPath, session.getProjectId(), audioFileName);
+                System.out.println("Extracted new audio file: " + audioPath);
+                addExtractedAudio(project, audioPath, audioFileName, videoPath);
             }
-        }
 
-        // If no audio path exists, extract it and update videosJson
-        if (audioPath == null) {
-            audioPath = extractAudioFromVideo(videoPath, session.getProjectId());
-            System.out.println("Extracted new audio file: " + audioPath);
-
-            // Update or add the video entry with the audioPath
+            List<Map<String, String>> videos = getVideos(project);
             boolean videoExists = false;
             for (Map<String, String> video : videos) {
                 if (video.get("videoPath").equals(videoPath)) {
@@ -310,13 +333,22 @@ public class VideoEditingService {
                 }
             }
             if (!videoExists) {
-                addVideo(project, videoPath, new File(videoPath).getName(), audioPath);
+                addVideo(project, videoPath, videoFileName, audioPath);
             } else {
                 project.setVideosJson(objectMapper.writeValueAsString(videos));
             }
             projectRepository.save(project);
+
+            audioSegment = new AudioSegment();
+            audioSegment.setAudioPath(audioPath);
+            int audioLayer = findAvailableAudioLayer(session.getTimelineState(), timelineStartTime, timelineEndTime);
+            audioSegment.setLayer(audioLayer);
+            audioSegment.setStartTime(startTime);
+            audioSegment.setEndTime(endTime);
+            audioSegment.setTimelineStartTime(timelineStartTime);
+            audioSegment.setTimelineEndTime(timelineEndTime);
+            audioSegment.setVolume(1.0);
         }
-        // --- End of Audio Reuse Logic ---
 
         VideoSegment segment = new VideoSegment();
         segment.setSourceVideoPath(videoPath);
@@ -330,25 +362,16 @@ public class VideoEditingService {
         segment.setTimelineStartTime(timelineStartTime);
         segment.setTimelineEndTime(timelineEndTime);
 
-        AudioSegment audioSegment = new AudioSegment();
-        audioSegment.setAudioPath(audioPath);
-        // NEW: Assign an available audio layer
-        int audioLayer = findAvailableAudioLayer(session.getTimelineState(), timelineStartTime, timelineEndTime);
-        audioSegment.setLayer(audioLayer);
-        audioSegment.setStartTime(startTime);
-        audioSegment.setEndTime(endTime);
-        audioSegment.setTimelineStartTime(timelineStartTime);
-        audioSegment.setTimelineEndTime(timelineEndTime);
-        audioSegment.setVolume(1.0);
-
-        segment.setAudioId(audioSegment.getId());
+        if (audioSegment != null) {
+            segment.setAudioId(audioSegment.getId());
+            session.getTimelineState().getAudioSegments().add(audioSegment);
+        }
 
         if (session.getTimelineState() == null) {
             session.setTimelineState(new TimelineState());
         }
 
         session.getTimelineState().getSegments().add(segment);
-        session.getTimelineState().getAudioSegments().add(audioSegment);
         session.setLastAccessTime(System.currentTimeMillis());
     }
     // NEW: Helper method to find an available audio layer
@@ -370,18 +393,18 @@ public class VideoEditingService {
         }
     }
 
-    private String extractAudioFromVideo(String videoPath, Long projectId) throws IOException, InterruptedException {
+    private String extractAudioFromVideo(String videoPath, Long projectId, String audioFileName) throws IOException, InterruptedException {
         File videoFile = new File(baseDir, "videos/" + videoPath);
         if (!videoFile.exists()) {
             throw new IOException("Video file not found: " + videoFile.getAbsolutePath());
         }
 
-        File audioDir = new File(baseDir, "audio/projects/" + projectId);
+        // Store audio in project-specific extracted folder: audio/projects/{projectId}/extracted/
+        File audioDir = new File(baseDir, "audio/projects/" + projectId + "/extracted");
         if (!audioDir.exists()) {
-            audioDir.mkdirs();
+            audioDir.mkdirs(); // Create the project-specific extracted directory if it doesn't exist
         }
 
-        String audioFileName = "extracted_" + System.currentTimeMillis() + ".mp3";
         File audioFile = new File(audioDir, audioFileName);
 
         List<String> command = new ArrayList<>();
@@ -396,7 +419,8 @@ public class VideoEditingService {
 
         executeFFmpegCommand(command);
 
-        return "audio/projects/" + projectId + "/" + audioFileName;
+        // Return relative path to the project's extracted folder
+        return "audio/projects/" + projectId + "/extracted/" + audioFileName;
     }
 
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
@@ -432,12 +456,20 @@ public class VideoEditingService {
         return 300; // Default to 5 minutes
     }
 
-    public void updateVideoSegment(String sessionId, String segmentId,
-                                   Integer positionX, Integer positionY, Double scale,
-                                   Double opacity,
-                                   Double timelineStartTime, Integer layer, Double timelineEndTime,
-                                   Double startTime, Double endTime,
-                                   Map<String, List<Keyframe>> keyframes) throws IOException, InterruptedException {
+    public void updateVideoSegment(
+            String sessionId,
+            String segmentId,
+            Integer positionX,
+            Integer positionY,
+            Double scale,
+            Double opacity,
+            Double timelineStartTime,
+            Integer layer,
+            Double timelineEndTime,
+            Double startTime,
+            Double endTime,
+            Map<String, List<Keyframe>> keyframes
+    ) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
         VideoSegment segmentToUpdate = null;
         for (VideoSegment segment : session.getTimelineState().getSegments()) {
@@ -456,6 +488,8 @@ public class VideoEditingService {
         double originalStartTime = segmentToUpdate.getStartTime();
         double originalEndTime = segmentToUpdate.getEndTime();
         int originalLayer = segmentToUpdate.getLayer();
+
+        boolean timelineOrLayerChanged = false;
 
         if (keyframes != null && !keyframes.isEmpty()) {
             for (Map.Entry<String, List<Keyframe>> entry : keyframes.entrySet()) {
@@ -488,15 +522,20 @@ public class VideoEditingService {
             if (positionY != null) segmentToUpdate.setPositionY(positionY);
             if (scale != null) segmentToUpdate.setScale(scale);
             if (opacity != null) segmentToUpdate.setOpacity(opacity);
-            if (layer != null) segmentToUpdate.setLayer(layer);
+            if (layer != null) {
+                segmentToUpdate.setLayer(layer);
+                timelineOrLayerChanged = true;
+            }
 
             if (timelineStartTime != null) {
                 timelineStartTime = roundToThreeDecimals(timelineStartTime);
                 segmentToUpdate.setTimelineStartTime(timelineStartTime);
+                timelineOrLayerChanged = true;
             }
             if (timelineEndTime != null) {
                 timelineEndTime = roundToThreeDecimals(timelineEndTime);
                 segmentToUpdate.setTimelineEndTime(timelineEndTime);
+                timelineOrLayerChanged = true;
             }
             if (startTime != null) {
                 startTime = roundToThreeDecimals(startTime);
@@ -517,37 +556,6 @@ public class VideoEditingService {
             if (newTimelineDuration < newClipDuration) {
                 segmentToUpdate.setTimelineEndTime(roundToThreeDecimals(segmentToUpdate.getTimelineStartTime() + newClipDuration));
             }
-
-            // MODIFIED: Sync audio segment with rounded times
-            if (segmentToUpdate.getAudioId() != null) {
-                AudioSegment audioSegment = null;
-                for (AudioSegment a : session.getTimelineState().getAudioSegments()) {
-                    if (a.getId().equals(segmentToUpdate.getAudioId())) {
-                        audioSegment = a;
-                        break;
-                    }
-                }
-                if (audioSegment != null) {
-                    if (startTime != null) {
-                        audioSegment.setStartTime(roundToThreeDecimals(startTime));
-                    }
-                    if (endTime != null) {
-                        audioSegment.setEndTime(roundToThreeDecimals(endTime));
-                    }
-                    if (timelineStartTime != null) {
-                        audioSegment.setTimelineStartTime(roundToThreeDecimals(timelineStartTime));
-                    }
-                    if (timelineEndTime != null) {
-                        audioSegment.setTimelineEndTime(roundToThreeDecimals(timelineEndTime));
-                    }
-                    // Ensure audio timeline duration matches video
-                    double audioTimelineDuration = roundToThreeDecimals(audioSegment.getTimelineEndTime() - audioSegment.getTimelineStartTime());
-                    double audioClipDuration = roundToThreeDecimals(audioSegment.getEndTime() - audioSegment.getStartTime());
-                    if (audioTimelineDuration < audioClipDuration) {
-                        audioSegment.setTimelineEndTime(roundToThreeDecimals(audioSegment.getTimelineStartTime() + audioClipDuration));
-                    }
-                }
-            }
         }
 
         // Validate timeline position with rounded values
@@ -566,6 +574,17 @@ public class VideoEditingService {
             segmentToUpdate.setEndTime(originalEndTime);
             segmentToUpdate.setLayer(originalLayer);
             throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + segmentToUpdate.getLayer());
+        }
+
+        // Update associated transitions if timelineStartTime or layer changed
+        if (timelineOrLayerChanged) {
+            updateAssociatedTransitions(
+                    sessionId,
+                    segmentId,
+                    segmentToUpdate.getLayer(),
+                    segmentToUpdate.getTimelineStartTime(),
+                    segmentToUpdate.getTimelineEndTime()
+            );
         }
 
         session.setLastAccessTime(System.currentTimeMillis());
@@ -609,17 +628,33 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
-    public void updateTextSegment(String sessionId, String segmentId, String text,
-                                  String fontFamily, Integer fontSize, String fontColor,
-                                  String backgroundColor, Integer positionX, Integer positionY,
-                                  Double opacity,
-                                  Double timelineStartTime, Double timelineEndTime, Integer layer,
-                                  Map<String, List<Keyframe>> keyframes) {
+    public void updateTextSegment(
+            String sessionId,
+            String segmentId,
+            String text,
+            String fontFamily,
+            Integer fontSize,
+            String fontColor,
+            String backgroundColor,
+            Integer positionX,
+            Integer positionY,
+            Double opacity,
+            Double timelineStartTime,
+            Double timelineEndTime,
+            Integer layer,
+            Map<String, List<Keyframe>> keyframes
+    ) throws IOException {
         EditSession session = getSession(sessionId);
         TextSegment textSegment = session.getTimelineState().getTextSegments().stream()
                 .filter(segment -> segment.getId().equals(segmentId))
                 .findFirst()
                 .orElseThrow(() -> new RuntimeException("Text segment not found with ID: " + segmentId));
+
+        double originalTimelineStartTime = textSegment.getTimelineStartTime();
+        double originalTimelineEndTime = textSegment.getTimelineEndTime();
+        int originalLayer = textSegment.getLayer();
+
+        boolean timelineOrLayerChanged = false;
 
         if (keyframes != null && !keyframes.isEmpty()) {
             for (Map.Entry<String, List<Keyframe>> entry : keyframes.entrySet()) {
@@ -629,7 +664,6 @@ public class VideoEditingService {
                     if (kf.getTime() < 0 || kf.getTime() > (textSegment.getTimelineEndTime() - textSegment.getTimelineStartTime())) {
                         throw new IllegalArgumentException("Keyframe time out of segment bounds for property " + property);
                     }
-                    // MODIFIED: Round keyframe time to three decimal places
                     kf.setTime(roundToThreeDecimals(kf.getTime()));
                     textSegment.addKeyframe(property, kf);
                 }
@@ -655,16 +689,46 @@ public class VideoEditingService {
             if (positionY != null) textSegment.setPositionY(positionY);
             if (opacity != null) textSegment.setOpacity(opacity);
             if (timelineStartTime != null) {
-                // MODIFIED: Round timelineStartTime to three decimal places
                 timelineStartTime = roundToThreeDecimals(timelineStartTime);
                 textSegment.setTimelineStartTime(timelineStartTime);
+                timelineOrLayerChanged = true;
             }
             if (timelineEndTime != null) {
-                // MODIFIED: Round timelineEndTime to three decimal places
                 timelineEndTime = roundToThreeDecimals(timelineEndTime);
                 textSegment.setTimelineEndTime(timelineEndTime);
+                timelineOrLayerChanged = true;
             }
-            if (layer != null) textSegment.setLayer(layer);
+            if (layer != null) {
+                textSegment.setLayer(layer);
+                timelineOrLayerChanged = true;
+            }
+        }
+
+        // Validate timeline position
+        TimelineState timelineState = session.getTimelineState();
+        timelineState.getTextSegments().remove(textSegment);
+        boolean positionAvailable = timelineState.isTimelinePositionAvailable(
+                textSegment.getTimelineStartTime(),
+                textSegment.getTimelineEndTime(),
+                textSegment.getLayer());
+        timelineState.getTextSegments().add(textSegment);
+
+        if (!positionAvailable) {
+            textSegment.setTimelineStartTime(originalTimelineStartTime);
+            textSegment.setTimelineEndTime(originalTimelineEndTime);
+            textSegment.setLayer(originalLayer);
+            throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + textSegment.getLayer());
+        }
+
+        // Update associated transitions if timelineStartTime or layer changed
+        if (timelineOrLayerChanged) {
+            updateAssociatedTransitions(
+                    sessionId,
+                    segmentId,
+                    textSegment.getLayer(),
+                    textSegment.getTimelineStartTime(),
+                    textSegment.getTimelineEndTime()
+            );
         }
 
         session.setLastAccessTime(System.currentTimeMillis());
@@ -722,14 +786,36 @@ public class VideoEditingService {
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
+        String audioPath = null;
+
+        // First, try to find the audio in audioJson
         List<Map<String, String>> audioFiles = getAudio(project);
         Map<String, String> targetAudio = audioFiles.stream()
-                .filter(audio -> audio.get("audioFileName").equals(audioFileName))
+                .filter(audio -> audio.get("audioFileName").equals(audioFileName) || audio.get("audioPath").equals(audioFileName))
                 .findFirst()
-                .orElseThrow(() -> new RuntimeException("No audio found with filename: " + audioFileName));
+                .orElse(null);
 
-        String audioPath = targetAudio.get("audioPath");
-        // MODIFIED: Round time fields to three decimal places
+        if (targetAudio != null) {
+            audioPath = targetAudio.get("audioPath");
+        } else {
+            // If not found in audioJson, try extractedAudioJson
+            List<Map<String, String>> extractedAudios = getExtractedAudio(project);
+            Map<String, String> extractedAudio = extractedAudios.stream()
+                    .filter(audio -> {
+                        String basename = audioFileName.contains("/") ?
+                                audioFileName.substring(audioFileName.lastIndexOf("/") + 1) :
+                                audioFileName;
+                        return audio.get("audioFileName").equals(audioFileName) ||
+                                audio.get("audioPath").equals(audioFileName) ||
+                                audio.get("audioFileName").equals(basename) ||
+                                audio.get("audioPath").equals(basename);
+                    })
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("No audio found with filename: " + audioFileName));
+            audioPath = extractedAudio.get("audioPath");
+        }
+
+        // Round time fields to three decimal places
         startTime = roundToThreeDecimals(startTime);
         timelineStartTime = roundToThreeDecimals(timelineStartTime);
         double calculatedEndTime = endTime != null ? roundToThreeDecimals(endTime) :
@@ -737,7 +823,7 @@ public class VideoEditingService {
         double calculatedTimelineEndTime = timelineEndTime != null ? roundToThreeDecimals(timelineEndTime) :
                 roundToThreeDecimals(timelineStartTime + (calculatedEndTime - startTime));
 
-        addAudioToTimeline(sessionId, audioPath, layer, startTime, calculatedEndTime, timelineStartTime, timelineEndTime);
+        addAudioToTimeline(sessionId, audioPath, layer, startTime, calculatedEndTime, timelineStartTime, calculatedTimelineEndTime);
     }
 
     public void addAudioToTimeline(
@@ -1123,7 +1209,8 @@ public class VideoEditingService {
             List<String> filtersToRemove,
             Double timelineStartTime,
             Double timelineEndTime,
-            Map<String, List<Keyframe>> keyframes) {
+            Map<String, List<Keyframe>> keyframes
+    ) throws IOException {
         EditSession session = getSession(sessionId);
         TimelineState timelineState = getTimelineState(sessionId);
 
@@ -1131,6 +1218,12 @@ public class VideoEditingService {
                 .filter(segment -> segment.getId().equals(imageSegmentId))
                 .findFirst()
                 .orElseThrow(() -> new RuntimeException("Image segment not found: " + imageSegmentId));
+
+        double originalTimelineStartTime = targetSegment.getTimelineStartTime();
+        double originalTimelineEndTime = targetSegment.getTimelineEndTime();
+        int originalLayer = targetSegment.getLayer();
+
+        boolean timelineOrLayerChanged = false;
 
         if (keyframes != null && !keyframes.isEmpty()) {
             for (Map.Entry<String, List<Keyframe>> entry : keyframes.entrySet()) {
@@ -1140,7 +1233,6 @@ public class VideoEditingService {
                     if (kf.getTime() < 0 || kf.getTime() > (targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime())) {
                         throw new IllegalArgumentException("Keyframe time out of segment bounds for property " + property);
                     }
-                    // MODIFIED: Round keyframe time to three decimal places
                     kf.setTime(roundToThreeDecimals(kf.getTime()));
                     targetSegment.addKeyframe(property, kf);
                 }
@@ -1164,19 +1256,22 @@ public class VideoEditingService {
             if (positionY != null) targetSegment.setPositionY(positionY);
             if (scale != null) targetSegment.setScale(scale);
             if (opacity != null) targetSegment.setOpacity(opacity);
-            if (layer != null) targetSegment.setLayer(layer);
+            if (layer != null) {
+                targetSegment.setLayer(layer);
+                timelineOrLayerChanged = true;
+            }
             if (customWidth != null) targetSegment.setCustomWidth(customWidth);
             if (customHeight != null) targetSegment.setCustomHeight(customHeight);
             if (maintainAspectRatio != null) targetSegment.setMaintainAspectRatio(maintainAspectRatio);
             if (timelineStartTime != null) {
-                // MODIFIED: Round timelineStartTime to three decimal places
                 timelineStartTime = roundToThreeDecimals(timelineStartTime);
                 targetSegment.setTimelineStartTime(timelineStartTime);
+                timelineOrLayerChanged = true;
             }
             if (timelineEndTime != null) {
-                // MODIFIED: Round timelineEndTime to three decimal places
                 timelineEndTime = roundToThreeDecimals(timelineEndTime);
                 targetSegment.setTimelineEndTime(timelineEndTime);
+                timelineOrLayerChanged = true;
             }
             if (filters != null && !filters.isEmpty()) {
                 for (Map.Entry<String, String> filter : filters.entrySet()) {
@@ -1191,6 +1286,32 @@ public class VideoEditingService {
             if (filtersToRemove != null && !filtersToRemove.isEmpty()) {
                 timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(targetSegment.getId()) && filtersToRemove.contains(f.getFilterId()));
             }
+        }
+
+        // Validate timeline position
+        timelineState.getImageSegments().remove(targetSegment);
+        boolean positionAvailable = timelineState.isTimelinePositionAvailable(
+                targetSegment.getTimelineStartTime(),
+                targetSegment.getTimelineEndTime(),
+                targetSegment.getLayer());
+        timelineState.getImageSegments().add(targetSegment);
+
+        if (!positionAvailable) {
+            targetSegment.setTimelineStartTime(originalTimelineStartTime);
+            targetSegment.setTimelineEndTime(originalTimelineEndTime);
+            targetSegment.setLayer(originalLayer);
+            throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + targetSegment.getLayer());
+        }
+
+        // Update associated transitions if timelineStartTime or layer changed
+        if (timelineOrLayerChanged) {
+            updateAssociatedTransitions(
+                    sessionId,
+                    imageSegmentId,
+                    targetSegment.getLayer(),
+                    targetSegment.getTimelineStartTime(),
+                    targetSegment.getTimelineEndTime()
+            );
         }
 
         session.setLastAccessTime(System.currentTimeMillis());
@@ -1340,6 +1461,280 @@ public class VideoEditingService {
         directory.delete();
     }
 
+    public void addTransition(
+            String sessionId,
+            String type,
+            double duration,
+            String fromSegmentId,
+            String toSegmentId,
+            int layer,
+            Map<String, String> parameters
+    ) throws IOException {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
+
+        // Validate toSegment
+        Segment toSegment = findSegment(timelineState, toSegmentId);
+        if (toSegment == null) {
+            throw new RuntimeException("To segment not found");
+        }
+        if (toSegment.getLayer() != layer) {
+            throw new RuntimeException("To segment must be on the same layer as the transition");
+        }
+
+        // Validate fromSegment if provided
+        Segment fromSegment = fromSegmentId != null ? findSegment(timelineState, fromSegmentId) : null;
+        if (fromSegmentId != null && fromSegment == null) {
+            throw new RuntimeException("From segment not found");
+        }
+        if (fromSegment != null) {
+            if (fromSegment.getLayer() != layer) {
+                throw new RuntimeException("From segment must be on the same layer as the transition");
+            }
+            if (Math.abs(fromSegment.getTimelineEndTime() - toSegment.getTimelineStartTime()) > 0.001) {
+                throw new RuntimeException("Segments must be adjacent on the timeline");
+            }
+        }
+
+        // Validate duration
+        if (duration <= 0) {
+            throw new RuntimeException("Invalid transition duration: Duration must be positive");
+        }
+        if (duration > toSegment.getTimelineEndTime() - toSegment.getTimelineStartTime()) {
+            throw new RuntimeException("Invalid transition duration: Duration exceeds toSegment duration");
+        }
+        if (fromSegment != null && duration > fromSegment.getTimelineEndTime() - fromSegment.getTimelineStartTime()) {
+            throw new RuntimeException("Invalid transition duration: Duration exceeds fromSegment duration");
+        }
+
+        // Calculate timeline start time
+        double timelineStartTime = fromSegment != null
+                ? roundToThreeDecimals(fromSegment.getTimelineEndTime() - duration)
+                : roundToThreeDecimals(toSegment.getTimelineStartTime());
+
+        // Check for overlapping transitions
+        for (Transition existingTransition : timelineState.getTransitions()) {
+            if (existingTransition.getLayer() == layer &&
+                    timelineStartTime < existingTransition.getTimelineStartTime() + existingTransition.getDuration() &&
+                    timelineStartTime + duration > existingTransition.getTimelineStartTime()) {
+                throw new RuntimeException("Transition overlaps with an existing transition on layer " + layer);
+            }
+        }
+
+        // Create and add transition
+        Transition transition = new Transition();
+        transition.setType(type);
+        transition.setDuration(roundToThreeDecimals(duration));
+        transition.setFromSegmentId(fromSegmentId);
+        transition.setToSegmentId(toSegmentId);
+        transition.setLayer(layer);
+        transition.setTimelineStartTime(timelineStartTime);
+        if (parameters != null) {
+            transition.setParameters(parameters);
+        }
+
+        timelineState.getTransitions().add(transition);
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    public Transition updateTransition(
+            String sessionId,
+            String transitionId,
+            String type,
+            Double duration,
+            String fromSegmentId,
+            String toSegmentId,
+            Integer layer,
+            Map<String, String> parameters
+    ) throws IOException {
+        Logger log = LoggerFactory.getLogger(VideoEditingService.class);
+        log.info("Updating transition: sessionId={}, transitionId={}, type={}, duration={}, fromSegmentId={}, toSegmentId={}, layer={}",
+                sessionId, transitionId, type, duration, fromSegmentId, toSegmentId, layer);
+
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
+
+        Transition transition = timelineState.getTransitions().stream()
+                .filter(t -> t.getId().equals(transitionId))
+                .findFirst()
+                .orElseThrow(() -> {
+                    log.error("Transition not found: transitionId={}", transitionId);
+                    return new RuntimeException("Transition not found: " + transitionId);
+                });
+
+        // Store original values for rollback
+        String originalType = transition.getType();
+        double originalDuration = transition.getDuration();
+        String originalFromSegmentId = transition.getFromSegmentId();
+        String originalToSegmentId = transition.getToSegmentId();
+        int originalLayer = transition.getLayer();
+        double originalTimelineStartTime = transition.getTimelineStartTime();
+        Map<String, String> originalParameters = transition.getParameters();
+
+        // Update fields if provided
+        if (type != null) transition.setType(type);
+        if (duration != null) transition.setDuration(roundToThreeDecimals(duration));
+        if (fromSegmentId != null) transition.setFromSegmentId(fromSegmentId);
+        if (toSegmentId != null) transition.setToSegmentId(toSegmentId);
+        if (layer != null) transition.setLayer(layer);
+        if (parameters != null) transition.setParameters(parameters);
+
+        // Validate updated transition
+        Segment fromSegment = transition.getFromSegmentId() != null ? findSegment(timelineState, transition.getFromSegmentId()) : null;
+        Segment toSegment = transition.getToSegmentId() != null ? findSegment(timelineState, transition.getToSegmentId()) : null;
+
+        // Ensure at least one segment is present
+        if (fromSegment == null && toSegment == null) {
+            rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+            throw new RuntimeException("At least one segment (fromSegment or toSegment) must be present");
+        }
+
+        // Validate layer consistency
+        if (fromSegment != null && fromSegment.getLayer() != transition.getLayer()) {
+            rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+            throw new RuntimeException("fromSegment must be on the same layer as the transition");
+        }
+        if (toSegment != null && toSegment.getLayer() != transition.getLayer()) {
+            rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+            throw new RuntimeException("toSegment must be on the same layer as the transition");
+        }
+
+        // Validate adjacency if both segments are present
+        if (fromSegment != null && toSegment != null) {
+            if (Math.abs(fromSegment.getTimelineEndTime() - toSegment.getTimelineStartTime()) > 0.001) {
+                rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+                throw new RuntimeException("Segments must be adjacent on the timeline");
+            }
+        }
+
+        // Validate duration
+        if (transition.getDuration() <= 0) {
+            rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+            throw new RuntimeException("Invalid transition duration: Duration must be positive");
+        }
+
+        // Validate duration against segment boundaries
+        double transitionEndTime = transition.getTimelineStartTime() + transition.getDuration();
+        if (fromSegment != null && transitionEndTime > fromSegment.getTimelineEndTime() + 0.001) {
+            rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+            throw new RuntimeException("Invalid transition duration: Transition end time exceeds fromSegment end time");
+        }
+        if (toSegment != null && transitionEndTime > toSegment.getTimelineEndTime() + 0.001) {
+            rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+            throw new RuntimeException("Invalid transition duration: Transition end time exceeds toSegment end time");
+        }
+
+        // Check for overlapping transitions
+        timelineState.getTransitions().remove(transition);
+        for (Transition existingTransition : timelineState.getTransitions()) {
+            if (existingTransition.getLayer() == transition.getLayer() &&
+                    transition.getTimelineStartTime() < existingTransition.getTimelineStartTime() + existingTransition.getDuration() &&
+                    transition.getTimelineStartTime() + transition.getDuration() > existingTransition.getTimelineStartTime()) {
+                timelineState.getTransitions().add(transition);
+                rollbackTransition(transition, originalType, originalDuration, originalFromSegmentId, originalToSegmentId, originalLayer, originalTimelineStartTime, originalParameters);
+                throw new RuntimeException("Transition overlaps with an existing transition on layer " + transition.getLayer());
+            }
+        }
+        timelineState.getTransitions().add(transition);
+
+        // Recalculate timelineStartTime only if segments or layer changed
+        if (fromSegmentId != null || toSegmentId != null || layer != null) {
+            if (toSegment != null) {
+                transition.setTimelineStartTime(roundToThreeDecimals(toSegment.getTimelineStartTime()));
+            } else if (fromSegment != null) {
+                transition.setTimelineStartTime(roundToThreeDecimals(fromSegment.getTimelineEndTime() - transition.getDuration()));
+            }
+        }
+
+        session.setLastAccessTime(System.currentTimeMillis());
+        log.info("Transition updated successfully: id={}", transition.getId());
+        return transition;
+    }
+
+    // Updated rollback method to include parameters
+    private void rollbackTransition(
+            Transition transition,
+            String type,
+            double duration,
+            String fromSegmentId,
+            String toSegmentId,
+            int layer,
+            double timelineStartTime,
+            Map<String, String> parameters
+    ) {
+        transition.setType(type);
+        transition.setDuration(duration);
+        transition.setFromSegmentId(fromSegmentId);
+        transition.setToSegmentId(toSegmentId);
+        transition.setLayer(layer);
+        transition.setTimelineStartTime(timelineStartTime);
+        transition.setParameters(parameters);
+    }
+
+    // NEW: Method to remove a transition
+    public void removeTransition(String sessionId, String transitionId) {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
+
+        boolean removed = timelineState.getTransitions().removeIf(t -> t.getId().equals(transitionId));
+        if (!removed) {
+            throw new RuntimeException("Transition not found: " + transitionId);
+        }
+
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    // NEW: Helper method to find a segment by ID
+    private Segment findSegment(TimelineState timelineState, String segmentId) {
+        for (VideoSegment segment : timelineState.getSegments()) {
+            if (segment.getId().equals(segmentId)) return segment;
+        }
+        for (ImageSegment segment : timelineState.getImageSegments()) {
+            if (segment.getId().equals(segmentId)) return segment;
+        }
+        for (TextSegment segment : timelineState.getTextSegments()) {
+            if (segment.getId().equals(segmentId)) return segment;
+        }
+        return null;
+    }
+
+    private void updateAssociatedTransitions(String sessionId, String segmentId, int newLayer, double newTimelineStartTime, double newTimelineEndTime) throws IOException {
+        EditSession session = getSession(sessionId);
+        TimelineState timelineState = session.getTimelineState();
+
+        // Find transitions involving this segment
+        List<Transition> transitionsToUpdate = timelineState.getTransitions().stream()
+                .filter(t -> segmentId.equals(t.getFromSegmentId()) || segmentId.equals(t.getToSegmentId()))
+                .collect(Collectors.toList());
+
+        for (Transition transition : transitionsToUpdate) {
+            // Update layer
+            transition.setLayer(newLayer);
+
+            // Recalculate timelineStartTime
+            Segment fromSegment = transition.getFromSegmentId() != null ? findSegment(timelineState, transition.getFromSegmentId()) : null;
+            Segment toSegment = findSegment(timelineState, transition.getToSegmentId());
+
+            if (toSegment == null) {
+                throw new RuntimeException("To segment not found for transition: " + transition.getId());
+            }
+
+            double timelineStartTime = fromSegment != null
+                    ? roundToThreeDecimals(fromSegment.getTimelineEndTime() - transition.getDuration())
+                    : roundToThreeDecimals(toSegment.getTimelineStartTime());
+
+            transition.setTimelineStartTime(timelineStartTime);
+
+            // Validate transition
+            if (fromSegment != null && Math.abs(fromSegment.getTimelineEndTime() - toSegment.getTimelineStartTime()) > 0.001) {
+                throw new RuntimeException("Segments must be adjacent after transition update for transition: " + transition.getId());
+            }
+        }
+
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+
     public File exportProject(String sessionId) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
 
@@ -1474,147 +1869,112 @@ public class VideoEditingService {
                         .filter(f -> f.getSegmentId().equals(vs.getId()))
                         .collect(Collectors.toList());
                 for (Filter filter : segmentFilters) {
-                    // Skip invalid filters
                     if (filter == null || filter.getFilterName() == null || filter.getFilterName().trim().isEmpty()) {
                         System.err.println("Skipping invalid filter for segment " + vs.getId() + ": null or empty filter name");
                         continue;
                     }
                     String filterName = filter.getFilterName().toLowerCase().trim();
                     String filterValue = filter.getFilterValue() != null ? String.valueOf(filter.getFilterValue()) : "";
-                    // Skip if filterValue is null or empty for non-toggle filters
-                    if (filterValue.isEmpty() && !Arrays.asList("grayscale", "sepia", "vintage", "invert", "emboss").contains(filterName)) {
+                    if (filterValue.isEmpty() && !Arrays.asList("grayscale", "sepia", "invert").contains(filterName)) {
                         System.err.println("Skipping filter " + filterName + " for segment " + vs.getId() + ": empty filter value");
                         continue;
                     }
-                    switch (filterName) {
-                        case "brightness":
-                            filterComplex.append("eq=brightness=").append(filterValue).append(",");
-                            break;
-                        case "contrast":
-                            filterComplex.append("eq=contrast=").append(filterValue).append(",");
-                            break;
-                        case "saturation":
-                            filterComplex.append("eq=saturation=").append(filterValue).append(",");
-                            break;
-                        case "hue":
-                            filterComplex.append("hue=h=").append(filterValue).append(",");
-                            break;
-                        case "gamma":
-                            filterComplex.append("eq=gamma=").append(filterValue).append(",");
-                            break;
-                        case "colorbalance":
-                            // Expect filterValue as "r,g,b"
-                            String[] rgb = filterValue.split(",");
-                            if (rgb.length == 3) {
-                                filterComplex.append("colorbalance=rs=").append(rgb[0])
-                                        .append(":gs=").append(rgb[1])
-                                        .append(":bs=").append(rgb[2]).append(",");
-                            }
-                            break;
-                        case "blur":
-                            filterComplex.append("gblur=sigma=").append(filterValue).append(",");
-                            break;
-                        case "sharpen":
-                            // Map sharpen to unsharp filter
-                            double sharpenValue = Double.parseDouble(filterValue);
-                            String amount = sharpenValue >= 0 ? String.valueOf(sharpenValue) : String.valueOf(-sharpenValue);
-                            filterComplex.append("unsharp=lx=5:ly=5:la=").append(amount).append(",");
-                            break;
-                        case "edge":
-                            filterComplex.append("edgedetect=low=").append(filterValue)
-                                    .append(":high=").append(Double.parseDouble(filterValue) * 2).append(",");
-                            break;
-                        case "grayscale":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("hue=s=0,");
-                            }
-                            break;
-                        case "sepia":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("colorchannelmixer=.393:.769:.189:.349:.686:.168:.272:.534:.131,");
-                            }
-                            break;
-                        case "vintage":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("curves=preset=vintage,");
-                            }
-                            break;
-                        case "posterize":
-                            // Simulate posterization by quantizing colors
-                            int levels = Integer.parseInt(filterValue);
-                            // Map levels (2-32) to quantization steps
-                            double step = 255.0 / (levels - 1);
-                            filterComplex.append("eq=r='floor(r*").append(levels).append("/256)*").append(step)
-                                    .append(":g=floor(g*").append(levels).append("/256)*").append(step)
-                                    .append(":b=floor(b*").append(levels).append("/256)*").append(step).append("',");
-                            break;
-                        case "solarize":
-                            // Simulate solarization using lutrgb
-                            double threshold = Double.parseDouble(filterValue) * 255;
-                            filterComplex.append("lutrgb=r='if(gt(val,").append(threshold).append("),255-val,val)':")
-                                    .append("g='if(gt(val,").append(threshold).append("),255-val,val)':")
-                                    .append("b='if(gt(val,").append(threshold).append("),255-val,val)',");
-                            break;
-                        case "invert":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("negate,");
-                            }
-                            break;
-                        case "noise":
-                            filterComplex.append("noise=alls=").append(filterValue).append(":allf=t+u,");
-                            break;
-                        case "vignette":
-                            filterComplex.append("vignette=angle=PI/").append(filterValue).append(",");
-                            break;
-                        case "pixelize":
-                            int blockSize = Integer.parseInt(filterValue);
-                            filterComplex.append("pixelize=pw=").append(blockSize)
-                                    .append(":ph=").append(blockSize).append(":mode=average,");
-                            break;
-                        case "rotate":
-                            double angleRad = Math.toRadians(Double.parseDouble(filterValue));
-                            filterComplex.append("rotate=").append(angleRad).append(":c=black,");
-                            break;
-                        case "flip":
-                            if (filterValue.equals("horizontal")) {
-                                filterComplex.append("hflip,");
-                            } else if (filterValue.equals("vertical")) {
-                                filterComplex.append("vflip,");
-                            }
-                            break;
-                        case "opacity":
-                            filterComplex.append("format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='a(X,Y)*").append(filterValue).append("',");
-                            break;
-                        case "emboss":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("convolution='0 -1 0 -1 5 -1 0 -1 0':normalize=0,");
-                            }
-                            break;
-                        case "glow":
-                            // Simulate glow using boxblur and blend
-                            double glowRadius = Double.parseDouble(filterValue);
-                            if (glowRadius > 0) {
-                                filterComplex.append("[tmp];[tmp]boxblur=").append(glowRadius / 2).append(":1[tmpblur];")
-                                        .append("[tmp][tmpblur]blend=all_mode=screen:all_opacity=0.5[tmp],");
-                            }
-                            break;
-                        case "overlay":
-                            // Expect filterValue as "color@opacity"
-                            String[] overlayParts = filterValue.split("@");
-                            if (overlayParts.length == 2) {
-                                String color = overlayParts[0];
-                                String opacity = overlayParts[1];
-                                filterComplex.append("[tmp];color=c=").append(color)
-                                        .append(":s=").append(canvasWidth).append("x").append(canvasHeight)
-                                        .append(":d=").append(totalDuration).append("[ovcolor];")
-                                        .append("[tmp][ovcolor]overlay=0:0:format=auto:alpha=blend:enable='between(t,")
-                                        .append(vs.getTimelineStartTime()).append(",").append(vs.getTimelineEndTime())
-                                        .append(")'[tmp],");
-                            }
-                            break;
-                        default:
-                            System.err.println("Unsupported filter: " + filterName + " for segment " + vs.getId());
-                            break;
+                    try {
+                        switch (filterName) {
+                            case "brightness":
+                                double brightness = Double.parseDouble(filterValue);
+                                if (brightness >= -1 && brightness <= 1) {
+                                    double cssBrightnessMultiplier = 1 + brightness;
+                                    if (cssBrightnessMultiplier <= 0) {
+                                        filterComplex.append("lutrgb=r=0:g=0:b=0,");
+                                        break;
+                                    }
+                                    if (cssBrightnessMultiplier == 1.0) {
+                                        break;
+                                    }
+                                    filterComplex.append("format=rgb24,");
+                                    String lut = String.format(
+                                            "lutrgb=r='val*%f':g='val*%f':b='val*%f',",
+                                            cssBrightnessMultiplier, cssBrightnessMultiplier, cssBrightnessMultiplier
+                                    );
+                                    filterComplex.append(lut);
+                                    filterComplex.append("format=yuv420p,");
+                                }
+                                break;
+                            case "contrast":
+                                double contrast = Double.parseDouble(filterValue);
+                                if (contrast >= 0 && contrast <= 2) {
+                                    if (contrast == 1.0) {
+                                        break; // No change needed for contrast = 1
+                                    }
+                                    filterComplex.append("format=rgb24,");
+                                    double offset = 128 * (1 - contrast); // CSS contrast offset
+                                    String lut = String.format(
+                                            "lutrgb=r='clip(val*%f+%f,0,255)':g='clip(val*%f+%f,0,255)':b='clip(val*%f+%f,0,255)',",
+                                            contrast, offset, contrast, offset, contrast, offset
+                                    );
+                                    filterComplex.append(lut);
+                                    filterComplex.append("format=yuv420p,");
+                                }
+                                break;
+                            case "saturation":
+                                double saturation;
+                                try {
+                                    saturation = Double.parseDouble(filterValue);
+                                } catch (NumberFormatException e) {
+                                    System.err.println("Invalid saturation value: " + filterValue + " for segment " + vs.getId());
+                                    break;
+                                }
+                                if (saturation >= 0 && saturation <= 2) {
+                                    if (Math.abs(saturation - 1.0) < 0.01) {
+                                        System.out.println("Skipping saturation filter for segment " + vs.getId() + ": value ≈ 1 (" + saturation + ")");
+                                        break; // No change needed for saturation ≈ 1
+                                    }
+                                    System.out.println("Applying saturation filter for segment " + vs.getId() + ": frontend=" + saturation);
+                                    filterComplex.append("eq=saturation=").append(String.format("%.2f", saturation)).append(",");
+                                } else {
+                                    System.err.println("Saturation value out of range [0, 2]: " + saturation + " for segment " + vs.getId());
+                                }
+                                break;
+                            case "hue":
+                                double hue = Double.parseDouble(filterValue);
+                                if (hue >= -180 && hue <= 180) {
+                                    if (hue == 0.0) {
+                                        break; // No change needed for hue = 0
+                                    }
+                                    filterComplex.append("hue=h=").append(String.format("%.1f", hue)).append(",");
+                                }
+                                break;
+                            case "grayscale":
+                                if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                    filterComplex.append("hue=s=0,");
+                                }
+                                break;
+                            case "invert":
+                                if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                    filterComplex.append("negate,");
+                                }
+                                break;
+                            case "rotate":
+                                double rotate = Double.parseDouble(filterValue);
+                                if (rotate >= -180 && rotate <= 180) {
+                                    double angleRad = Math.toRadians(rotate);
+                                    filterComplex.append("rotate=").append(angleRad).append(":c=black,");
+                                }
+                                break;
+                            case "flip":
+                                if (filterValue.equals("horizontal")) {
+                                    filterComplex.append("hflip,");
+                                } else if (filterValue.equals("vertical")) {
+                                    filterComplex.append("vflip,");
+                                }
+                                break;
+                            default:
+                                System.err.println("Unsupported filter: " + filterName + " for segment " + vs.getId());
+                                break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Invalid filter value for " + filterName + " in segment " + vs.getId() + ": " + filterValue);
                     }
                 }
 
@@ -1675,9 +2035,9 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
+                    xExpr.insert(0, "(W/2)+").append("-(w/2)");
                 } else {
-                    xExpr.append("(W-w)/2+").append(baseX).append("-w/2*(").append(scaleExpr).append("-1)");
+                    xExpr.append("(W/2)+").append(baseX).append("-(w/2)");
                 }
 
                 // Handle position Y with keyframes
@@ -1706,9 +2066,9 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    yExpr.insert(0, "(").append("+(H-h)/2-h/2*(").append(scaleExpr).append("-1))");
+                    yExpr.insert(0, "(H/2)+").append("-(h/2)");
                 } else {
-                    yExpr.append("(H-h)/2+").append(baseY).append("-w/2*(").append(scaleExpr).append("-1)");
+                    yExpr.append("(H/2)+").append(baseY).append("-(h/2)");
                 }
 
                 // Overlay the scaled video onto the previous output
@@ -1731,147 +2091,112 @@ public class VideoEditingService {
                         .filter(f -> f.getSegmentId().equals(is.getId()))
                         .collect(Collectors.toList());
                 for (Filter filter : segmentFilters) {
-                    // Skip invalid filters
                     if (filter == null || filter.getFilterName() == null || filter.getFilterName().trim().isEmpty()) {
                         System.err.println("Skipping invalid filter for segment " + is.getId() + ": null or empty filter name");
                         continue;
                     }
                     String filterName = filter.getFilterName().toLowerCase().trim();
                     String filterValue = filter.getFilterValue() != null ? String.valueOf(filter.getFilterValue()) : "";
-                    // Skip if filterValue is empty for non-toggle filters
-                    if (filterValue.isEmpty() && !Arrays.asList("grayscale", "sepia", "vintage", "invert", "emboss").contains(filterName)) {
+                    if (filterValue.isEmpty() && !Arrays.asList("grayscale", "sepia", "invert").contains(filterName)) {
                         System.err.println("Skipping filter " + filterName + " for segment " + is.getId() + ": empty filter value");
                         continue;
                     }
-                    switch (filterName) {
-                        case "brightness":
-                            filterComplex.append("eq=brightness=").append(filterValue).append(",");
-                            break;
-                        case "contrast":
-                            filterComplex.append("eq=contrast=").append(filterValue).append(",");
-                            break;
-                        case "saturation":
-                            filterComplex.append("eq=saturation=").append(filterValue).append(",");
-                            break;
-                        case "hue":
-                            filterComplex.append("hue=h=").append(filterValue).append(",");
-                            break;
-                        case "gamma":
-                            filterComplex.append("eq=gamma=").append(filterValue).append(",");
-                            break;
-                        case "colorbalance":
-                            // Expect filterValue as "r,g,b"
-                            String[] rgb = filterValue.split(",");
-                            if (rgb.length == 3) {
-                                filterComplex.append("colorbalance=rs=").append(rgb[0])
-                                        .append(":gs=").append(rgb[1])
-                                        .append(":bs=").append(rgb[2]).append(",");
-                            }
-                            break;
-                        case "blur":
-                            filterComplex.append("gblur=sigma=").append(filterValue).append(",");
-                            break;
-                        case "sharpen":
-                            // Map sharpen to unsharp filter
-                            double sharpenValue = Double.parseDouble(filterValue);
-                            String amount = sharpenValue >= 0 ? String.valueOf(sharpenValue) : String.valueOf(-sharpenValue);
-                            filterComplex.append("unsharp=lx=5:ly=5:la=").append(amount).append(",");
-                            break;
-                        case "edge":
-                            filterComplex.append("edgedetect=low=").append(filterValue)
-                                    .append(":high=").append(Double.parseDouble(filterValue) * 2).append(",");
-                            break;
-                        case "grayscale":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("hue=s=0,");
-                            }
-                            break;
-                        case "sepia":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("colorchannelmixer=.393:.769:.189:.349:.686:.168:.272:.534:.131,");
-                            }
-                            break;
-                        case "vintage":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("curves=preset=vintage,");
-                            }
-                            break;
-                        case "posterize":
-                            // Simulate posterization by quantizing colors
-                            int levels = Integer.parseInt(filterValue);
-                            // Map levels (2-32) to quantization steps
-                            double step = 255.0 / (levels - 1);
-                            filterComplex.append("eq=r='floor(r*").append(levels).append("/256)*").append(step)
-                                    .append(":g=floor(g*").append(levels).append("/256)*").append(step)
-                                    .append(":b=floor(b*").append(levels).append("/256)*").append(step).append("',");
-                            break;
-                        case "solarize":
-                            // Simulate solarization using lutrgb
-                            double threshold = Double.parseDouble(filterValue) * 255;
-                            filterComplex.append("lutrgb=r='if(gt(val,").append(threshold).append("),255-val,val)':")
-                                    .append("g='if(gt(val,").append(threshold).append("),255-val,val)':")
-                                    .append("b='if(gt(val,").append(threshold).append("),255-val,val)',");
-                            break;
-                        case "invert":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("negate,");
-                            }
-                            break;
-                        case "noise":
-                            filterComplex.append("noise=alls=").append(filterValue).append(":allf=t+u,");
-                            break;
-                        case "vignette":
-                            filterComplex.append("vignette=angle=PI/").append(filterValue).append(",");
-                            break;
-                        case "pixelize":
-                            int blockSize = Integer.parseInt(filterValue);
-                            filterComplex.append("pixelize=pw=").append(blockSize)
-                                    .append(":ph=").append(blockSize).append(":mode=average,");
-                            break;
-                        case "rotate":
-                            double angleRad = Math.toRadians(Double.parseDouble(filterValue));
-                            filterComplex.append("rotate=").append(angleRad).append(":c=black,");
-                            break;
-                        case "flip":
-                            if (filterValue.equals("horizontal")) {
-                                filterComplex.append("hflip,");
-                            } else if (filterValue.equals("vertical")) {
-                                filterComplex.append("vflip,");
-                            }
-                            break;
-                        case "opacity":
-                            filterComplex.append("format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='a(X,Y)*").append(filterValue).append("',");
-                            break;
-                        case "emboss":
-                            if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
-                                filterComplex.append("convolution='0 -1 0 -1 5 -1 0 -1 0':normalize=0,");
-                            }
-                            break;
-                        case "glow":
-                            // Simulate glow using boxblur and blend
-                            double glowRadius = Double.parseDouble(filterValue);
-                            if (glowRadius > 0) {
-                                filterComplex.append("[tmp];[tmp]boxblur=").append(glowRadius / 2).append(":1[tmpblur];")
-                                        .append("[tmp][tmpblur]blend=all_mode=screen:all_opacity=0.5[tmp],");
-                            }
-                            break;
-                        case "overlay":
-                            // Expect filterValue as "color@opacity"
-                            String[] overlayParts = filterValue.split("@");
-                            if (overlayParts.length == 2) {
-                                String color = overlayParts[0];
-                                String opacity = overlayParts[1];
-                                filterComplex.append("[tmp];color=c=").append(color)
-                                        .append(":s=").append(canvasWidth).append("x").append(canvasHeight)
-                                        .append(":d=").append(totalDuration).append("[ovcolor];")
-                                        .append("[tmp][ovcolor]overlay=0:0:format=auto:alpha=blend:enable='between(t,")
-                                        .append(is.getTimelineStartTime()).append(",").append(is.getTimelineEndTime())
-                                        .append(")'[tmp],");
-                            }
-                            break;
-                        default:
-                            System.err.println("Unsupported filter: " + filterName + " for segment " + is.getId());
-                            break;
+                    try {
+                        switch (filterName) {
+                            case "brightness":
+                                double brightness = Double.parseDouble(filterValue);
+                                if (brightness >= -1 && brightness <= 1) {
+                                    double cssBrightnessMultiplier = 1 + brightness;
+                                    if (cssBrightnessMultiplier <= 0) {
+                                        filterComplex.append("lutrgb=r=0:g=0:b=0,");
+                                        break;
+                                    }
+                                    if (cssBrightnessMultiplier == 1.0) {
+                                        break;
+                                    }
+                                    filterComplex.append("format=rgb24,");
+                                    String lut = String.format(
+                                            "lutrgb=r='val*%f':g='val*%f':b='val*%f',",
+                                            cssBrightnessMultiplier, cssBrightnessMultiplier, cssBrightnessMultiplier
+                                    );
+                                    filterComplex.append(lut);
+                                    filterComplex.append("format=yuv420p,");
+                                }
+                                break;
+                            case "contrast":
+                                double contrast = Double.parseDouble(filterValue);
+                                if (contrast >= 0 && contrast <= 2) {
+                                    if (contrast == 1.0) {
+                                        break; // No change needed for contrast = 1
+                                    }
+                                    filterComplex.append("format=rgb24,");
+                                    double offset = 128 * (1 - contrast); // CSS contrast offset
+                                    String lut = String.format(
+                                            "lutrgb=r='clip(val*%f+%f,0,255)':g='clip(val*%f+%f,0,255)':b='clip(val*%f+%f,0,255)',",
+                                            contrast, offset, contrast, offset, contrast, offset
+                                    );
+                                    filterComplex.append(lut);
+                                    filterComplex.append("format=yuv420p,");
+                                }
+                                break;
+                            case "saturation":
+                                double saturation;
+                                try {
+                                    saturation = Double.parseDouble(filterValue);
+                                } catch (NumberFormatException e) {
+                                    System.err.println("Invalid saturation value: " + filterValue + " for segment " + is.getId());
+                                    break;
+                                }
+                                if (saturation >= 0 && saturation <= 2) {
+                                    if (Math.abs(saturation - 1.0) < 0.01) {
+                                        System.out.println("Skipping saturation filter for segment " + is.getId() + ": value ≈ 1 (" + saturation + ")");
+                                        break; // No change needed for saturation ≈ 1
+                                    }
+                                    System.out.println("Applying saturation filter for segment " + is.getId() + ": frontend=" + saturation);
+                                    filterComplex.append("eq=saturation=").append(String.format("%.2f", saturation)).append(",");
+                                } else {
+                                    System.err.println("Saturation value out of range [0, 2]: " + saturation + " for segment " + is.getId());
+                                }
+                                break;
+                            case "hue":
+                                double hue = Double.parseDouble(filterValue);
+                                if (hue >= -180 && hue <= 180) {
+                                    if (hue == 0.0) {
+                                        break; // No change needed for hue = 0
+                                    }
+                                    filterComplex.append("hue=h=").append(String.format("%.1f", hue)).append(",");
+                                }
+                                break;
+                            case "grayscale":
+                                if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                    filterComplex.append("hue=s=0,");
+                                }
+                                break;
+                            case "invert":
+                                if (!filterValue.isEmpty() && Double.parseDouble(filterValue) > 0) {
+                                    filterComplex.append("negate,");
+                                }
+                                break;
+                            case "rotate":
+                                double rotate = Double.parseDouble(filterValue);
+                                if (rotate >= -180 && rotate <= 180) {
+                                    double angleRad = Math.toRadians(rotate);
+                                    filterComplex.append("rotate=").append(angleRad).append(":c=black,");
+                                }
+                                break;
+                            case "flip":
+                                if (filterValue.equals("horizontal")) {
+                                    filterComplex.append("hflip,");
+                                } else if (filterValue.equals("vertical")) {
+                                    filterComplex.append("vflip,");
+                                }
+                                break;
+                            default:
+                                System.err.println("Unsupported filter: " + filterName + " for segment " + is.getId());
+                                break;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Invalid filter value for " + filterName + " in segment " + is.getId() + ": " + filterValue);
                     }
                 }
 
@@ -1932,9 +2257,11 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
+                    // Center-based X positioning with keyframes
+                    xExpr.insert(0, "(W/2)+").append("-(w/2)");
                 } else {
-                    xExpr.append("(W-w)/2+").append(baseX).append("-w/2*(").append(scaleExpr).append("-1)");
+                    // Center-based X positioning without keyframes
+                    xExpr.append("(W/2)+").append(baseX).append("-(w/2)");
                 }
 
                 // Handle position Y with keyframes
@@ -1963,9 +2290,11 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    xExpr.insert(0, "(").append("+(W-w)/2-w/2*(").append(scaleExpr).append("-1))");
+                    // Center-based Y positioning with keyframes
+                    yExpr.insert(0, "(H/2)+").append("-(h/2)");
                 } else {
-                    yExpr.append("(H-h)/2+").append(baseY).append("-h/2*(").append(scaleExpr).append("-1)");
+                    // Center-based Y positioning without keyframes
+                    yExpr.append("(H/2)+").append(baseY).append("-(h/2)");
                 }
 
                 filterComplex.append("[").append(lastOutput).append("][scaled").append(outputLabel).append("]");
@@ -2013,9 +2342,11 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    xExpr.insert(0, "(").append("+(w-tw)/2)");
+                    // Center-based X positioning with keyframes for text
+                    xExpr.insert(0, "(W/2)+").append("-(tw/2)");
                 } else {
-                    xExpr.append("(w-tw)/2+").append(baseX);
+                    // Center-based X positioning without keyframes for text
+                    xExpr.append("(W/2)+").append(baseX).append("-(tw/2)");
                 }
 
                 // Handle position Y with keyframes
@@ -2044,9 +2375,11 @@ public class VideoEditingService {
                                     .append(timelineKfTime).append("-").append(timelinePrevTime).append("))))");
                         }
                     }
-                    yExpr.insert(0, "(").append("+(h-th)/2)");
+                    // Center-based Y positioning with keyframes for text
+                    yExpr.insert(0, "(H/2)+").append("-(th/2)");
                 } else {
-                    yExpr.append("(h-th)/2+").append(baseY);
+                    // Center-based Y positioning without keyframes for text
+                    yExpr.append("(H/2)+").append(baseY).append("-(th/2)");
                 }
 
                 filterComplex.append("x='").append(xExpr).append("':y='").append(yExpr).append("'");
@@ -2311,300 +2644,6 @@ public class VideoEditingService {
         }
 
         session.setLastAccessTime(System.currentTimeMillis());
-    }
-
-    private String generateVideoFilters(VideoSegment segment, TimelineState timelineState) {
-        StringBuilder filterStr = new StringBuilder();
-        List<Filter> segmentFilters = timelineState.getFilters().stream()
-                .filter(f -> f.getSegmentId().equals(segment.getId()))
-                .toList();
-
-        for (Filter filter : segmentFilters) {
-            String filterName = filter.getFilterName().toLowerCase();
-            String filterValue = filter.getFilterValue();
-            switch (filterName) {
-                // Color Adjustments
-                case "brightness":
-                    filterStr.append("eq=brightness=").append(filterValue).append(",");
-                    break;
-                case "contrast":
-                    filterStr.append("eq=contrast=").append(filterValue).append(",");
-                    break;
-                case "saturation":
-                    filterStr.append("eq=saturation=").append(filterValue).append(",");
-                    break;
-                case "hue":
-                    filterStr.append("hue=h=").append(filterValue).append(",");
-                    break;
-                case "gamma":
-                    filterStr.append("eq=gamma=").append(filterValue).append(",");
-                    break;
-                case "colorbalance":
-                    // Format: "r,g,b" (e.g., "0.1,-0.2,0.3")
-                    String[] rgb = filterValue.split(",");
-                    if (rgb.length == 3) {
-                        filterStr.append("colorbalance=rs=").append(rgb[0])
-                                .append(":gs=").append(rgb[1])
-                                .append(":bs=").append(rgb[2]).append(",");
-                    }
-                    break;
-                case "levels":
-                    // Format: "in_min/in_max/out_min/out_max" (e.g., "0/255/16/235")
-                    String[] levels = filterValue.split("/");
-                    if (levels.length == 4) {
-                        filterStr.append("levels=rimin=").append(levels[0]).append(":rimax=").append(levels[1])
-                                .append(":romin=").append(levels[2]).append(":romax=").append(levels[3]).append(",");
-                    }
-                    break;
-                case "curves":
-                    // Format: "r='0/0 1/1':g='0/0 1/1':b='0/0 1/1'"
-                    filterStr.append("curves=").append(filterValue).append(",");
-                    break;
-
-                // Stylization
-                case "grayscale":
-                    filterStr.append("hue=s=0,");
-                    break;
-                case "sepia":
-                    filterStr.append("colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0,");
-                    break;
-                case "vintage":
-                    filterStr.append("curves=preset=vintage,");
-                    break;
-                case "posterize":
-                    filterStr.append("posterize=").append(filterValue).append(",");
-                    break;
-                case "solarize":
-                    filterStr.append("solarize=threshold=").append(filterValue).append(",");
-                    break;
-                case "invert":
-                    filterStr.append("negate,");
-                    break;
-
-                // Blur and Sharpen
-                case "blur":
-                    filterStr.append("gblur=sigma=").append(filterValue).append(",");
-                    break;
-                case "sharpen":
-                    filterStr.append("unsharp=5:5:").append(filterValue).append(":5:5:0,");
-                    break;
-                case "edge":
-                    filterStr.append("edgedetect=mode=colormix:high=").append(filterValue)
-                            .append(":low=").append(filterValue).append(",");
-                    break;
-
-                // Distortion and Noise
-                case "noise":
-                    filterStr.append("noise=alls=").append(filterValue).append(",");
-                    break;
-                case "vignette":
-                    filterStr.append("vignette=PI/").append(filterValue).append(",");
-                    break;
-                case "pixelize":
-                    // Format: "size" (e.g., "8" for 8x8 blocks)
-                    filterStr.append("pixelize=").append(filterValue).append(":").append(filterValue).append(",");
-                    break;
-
-                // Transformation
-                case "rotate":
-                    filterStr.append("rotate=").append(filterValue).append("*PI/180,");
-                    break;
-                case "flip":
-                    if ("horizontal".equals(filterValue)) {
-                        filterStr.append("hflip,");
-                    } else if ("vertical".equals(filterValue)) {
-                        filterStr.append("vflip,");
-                    }
-                    break;
-                case "crop":
-                    // Format: "width:height:x:y" (e.g., "720:480:0:0")
-                    filterStr.append("crop=").append(filterValue).append(",");
-                    break;
-                case "opacity":
-                    filterStr.append("format=rgba,colorchannelmixer=aa=").append(filterValue).append(",");
-                    break;
-
-                // Special Effects
-                case "emboss":
-                    filterStr.append("convolution='-2 -1 0 -1 1 1 0 1 2',");
-                    break;
-                case "glow":
-                    filterStr.append("gblur=sigma=").append(filterValue).append(":steps=3,");
-                    filterStr.append("blend=all_mode=glow:all_opacity=0.5,");
-                    break;
-                case "overlay":
-                    // Format: "color@opacity" (e.g., "red@0.5")
-                    String[] overlayParts = filterValue.split("@");
-                    if (overlayParts.length == 2) {
-                        filterStr.append("color=").append(overlayParts[0]).append(":s=iwxih[d];")
-                                .append("[v][d]overlay=0:0:enable='between(t,0,9999)':format=rgb,")
-                                .append("colorchannelmixer=aa=").append(overlayParts[1]).append(",");
-                    }
-                    break;
-
-                default:
-                    System.out.println("Unsupported filter: " + filterName);
-            }
-        }
-        if (filterStr.length() > 0 && filterStr.charAt(filterStr.length() - 1) == ',') {
-            filterStr.setLength(filterStr.length() - 1);
-        }
-        return filterStr.toString();
-    }
-
-    private String generateImageFilters(ImageSegment imgSegment, TimelineState timelineState) {
-        StringBuilder filterStr = new StringBuilder();
-
-        // Scaling logic (unchanged)
-        if (imgSegment.getCustomWidth() > 0 || imgSegment.getCustomHeight() > 0) {
-            if (imgSegment.isMaintainAspectRatio()) {
-                if (imgSegment.getCustomWidth() > 0 && imgSegment.getCustomHeight() > 0) {
-                    filterStr.append("scale=").append(imgSegment.getCustomWidth()).append(":")
-                            .append(imgSegment.getCustomHeight()).append(":force_original_aspect_ratio=decrease");
-                } else if (imgSegment.getCustomWidth() > 0) {
-                    filterStr.append("scale=").append(imgSegment.getCustomWidth()).append(":-1");
-                } else {
-                    filterStr.append("scale=-1:").append(imgSegment.getCustomHeight());
-                }
-            } else {
-                int width = imgSegment.getCustomWidth() > 0 ? imgSegment.getCustomWidth() : imgSegment.getWidth();
-                int height = imgSegment.getCustomHeight() > 0 ? imgSegment.getCustomHeight() : imgSegment.getHeight();
-                filterStr.append("scale=").append(width).append(":").append(height);
-            }
-        } else {
-            filterStr.append("scale=").append(imgSegment.getWidth()).append("*")
-                    .append(imgSegment.getScale()).append(":")
-                    .append(imgSegment.getHeight()).append("*")
-                    .append(imgSegment.getScale());
-        }
-
-        List<Filter> segmentFilters = timelineState.getFilters().stream()
-                .filter(f -> f.getSegmentId().equals(imgSegment.getId()))
-                .toList();
-
-        for (Filter filter : segmentFilters) {
-            String filterName = filter.getFilterName().toLowerCase();
-            String filterValue = filter.getFilterValue();
-            switch (filterName) {
-                // Color Adjustments
-                case "brightness":
-                    filterStr.append(",eq=brightness=").append(filterValue);
-                    break;
-                case "contrast":
-                    filterStr.append(",eq=contrast=").append(filterValue);
-                    break;
-                case "saturation":
-                    filterStr.append(",eq=saturation=").append(filterValue);
-                    break;
-                case "hue":
-                    filterStr.append(",hue=h=").append(filterValue);
-                    break;
-                case "gamma":
-                    filterStr.append(",eq=gamma=").append(filterValue);
-                    break;
-                case "colorbalance":
-                    String[] rgb = filterValue.split(",");
-                    if (rgb.length == 3) {
-                        filterStr.append(",colorbalance=rs=").append(rgb[0])
-                                .append(":gs=").append(rgb[1])
-                                .append(":bs=").append(rgb[2]);
-                    }
-                    break;
-                case "levels":
-                    String[] levels = filterValue.split("/");
-                    if (levels.length == 4) {
-                        filterStr.append(",levels=rimin=").append(levels[0]).append(":rimax=").append(levels[1])
-                                .append(":romin=").append(levels[2]).append(":romax=").append(levels[3]);
-                    }
-                    break;
-                case "curves":
-                    filterStr.append(",curves=").append(filterValue);
-                    break;
-
-                // Stylization
-                case "grayscale":
-                    filterStr.append(",hue=s=0");
-                    break;
-                case "sepia":
-                    filterStr.append(",colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0");
-                    break;
-                case "vintage":
-                    filterStr.append(",curves=preset=vintage");
-                    break;
-                case "posterize":
-                    filterStr.append(",posterize=").append(filterValue);
-                    break;
-                case "solarize":
-                    filterStr.append(",solarize=threshold=").append(filterValue);
-                    break;
-                case "invert":
-                    filterStr.append(",negate");
-                    break;
-
-                // Blur and Sharpen
-                case "blur":
-                    filterStr.append(",gblur=sigma=").append(filterValue);
-                    break;
-                case "sharpen":
-                    filterStr.append(",unsharp=5:5:").append(filterValue).append(":5:5:0");
-                    break;
-                case "edge":
-                    filterStr.append(",edgedetect=mode=colormix:high=").append(filterValue)
-                            .append(":low=").append(filterValue);
-                    break;
-
-                // Distortion and Noise
-                case "noise":
-                    filterStr.append(",noise=alls=").append(filterValue).append(":allf=t");
-                    break;
-                case "vignette":
-                    filterStr.append(",vignette=PI/").append(filterValue);
-                    break;
-                case "pixelize":
-                    filterStr.append(",pixelize=").append(filterValue).append(":").append(filterValue);
-                    break;
-
-                // Transformation
-                case "rotate":
-                    filterStr.append(",rotate=").append(filterValue).append("*PI/180");
-                    break;
-                case "flip":
-                    if ("horizontal".equals(filterValue)) {
-                        filterStr.append(",hflip");
-                    } else if ("vertical".equals(filterValue)) {
-                        filterStr.append(",vflip");
-                    }
-                    break;
-                case "crop":
-                    filterStr.append(",crop=").append(filterValue);
-                    break;
-                case "opacity":
-                    filterStr.append(",format=rgba,colorchannelmixer=aa=").append(filterValue);
-                    break;
-
-                // Special Effects
-                case "emboss":
-                    filterStr.append(",convolution='-2 -1 0 -1 1 1 0 1 2'");
-                    break;
-                case "glow":
-                    filterStr.append(",gblur=sigma=").append(filterValue).append(":steps=3");
-                    filterStr.append(",blend=all_mode=glow:all_opacity=0.5");
-                    break;
-                case "overlay":
-                    String[] overlayParts = filterValue.split("@");
-                    if (overlayParts.length == 2) {
-                        filterStr.append(",color=").append(overlayParts[0]).append(":s=iwxih[d];")
-                                .append("[v][d]overlay=0:0:enable='between(t,0,9999)':format=rgb,")
-                                .append("colorchannelmixer=aa=").append(overlayParts[1]);
-                    }
-                    break;
-
-                default:
-                    System.out.println("Unsupported filter: " + filterName);
-            }
-        }
-
-        return filterStr.toString();
     }
 
     public List<Filter> getFiltersForSegment(String sessionId, String segmentId) {

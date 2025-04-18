@@ -53,6 +53,17 @@ public class Project {
     @Column(columnDefinition = "TEXT")
     private String audioJson; // Stores a JSON array of audio data
 
+    @Column(columnDefinition = "TEXT")
+    private String extractedAudioJson;
+
+    public String getExtractedAudioJson() {
+        return extractedAudioJson;
+    }
+
+    public void setExtractedAudioJson(String extractedAudioJson) {
+        this.extractedAudioJson = extractedAudioJson;
+    }
+
     public void setExportedVideoPath(String exportedVideoPath) {
         this.exportedVideoPath = exportedVideoPath;
     }

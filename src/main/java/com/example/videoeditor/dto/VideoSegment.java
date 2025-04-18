@@ -5,7 +5,7 @@ import lombok.Data;
 import java.util.*;
 
 @Data
-public class VideoSegment {
+public class VideoSegment implements Segment {
     private String sourceVideoPath;
     private double startTime;
     private double endTime;
@@ -17,7 +17,7 @@ public class VideoSegment {
     private Integer layer = 0;
     private double timelineStartTime;
     private double timelineEndTime;
-    private String audioId; // Added audioId field to link to AudioSegment
+    private String audioId;
 
     public String getAudioId() {
         return audioId;
@@ -55,13 +55,32 @@ public class VideoSegment {
         }
     }
 
+    @Override
+    public String getId() {
+        return id;
+    }
+
+    @Override
+    public Integer getLayer() {
+        return layer;
+    }
+
+    @Override
+    public double getTimelineStartTime() {
+        return timelineStartTime;
+    }
+
+    @Override
+    public double getTimelineEndTime() {
+        return timelineEndTime;
+    }
+
     public String getSourceVideoPath() { return sourceVideoPath; }
     public void setSourceVideoPath(String sourceVideoPath) { this.sourceVideoPath = sourceVideoPath; }
     public double getStartTime() { return startTime; }
     public void setStartTime(double startTime) { this.startTime = startTime; }
     public double getEndTime() { return endTime; }
     public void setEndTime(double endTime) { this.endTime = endTime; }
-    public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public Integer getPositionX() { return positionX; }
     public void setPositionX(Integer positionX) { this.positionX = positionX; }
@@ -71,10 +90,8 @@ public class VideoSegment {
     public void setScale(Double scale) { this.scale = scale; }
     public Double getOpacity() { return opacity; } // Added getter
     public void setOpacity(Double opacity) { this.opacity = opacity; } // Added setter
-    public Integer getLayer() { return layer; }
     public void setLayer(Integer layer) { this.layer = layer; }
-    public double getTimelineStartTime() { return timelineStartTime; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
-    public double getTimelineEndTime() { return timelineEndTime; }
     public void setTimelineEndTime(double timelineEndTime) { this.timelineEndTime = timelineEndTime; }
+
 }

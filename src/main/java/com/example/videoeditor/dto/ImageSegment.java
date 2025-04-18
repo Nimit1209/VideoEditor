@@ -5,7 +5,7 @@ import lombok.Data;
 import java.util.*;
 
 @Data
-public class ImageSegment {
+public class ImageSegment implements Segment {
     private String id = UUID.randomUUID().toString();
     private String imagePath;
     private int layer;
@@ -45,11 +45,29 @@ public class ImageSegment {
         }
     }
 
-    public String getId() { return id; }
+    @Override
+    public String getId() {
+        return id;
+    }
+
+    @Override
+    public Integer getLayer() {
+        return layer;
+    }
+
+    @Override
+    public double getTimelineStartTime() {
+        return timelineStartTime;
+    }
+
+    @Override
+    public double getTimelineEndTime() {
+        return timelineEndTime;
+    }
+
     public void setId(String id) { this.id = id; }
     public String getImagePath() { return imagePath; }
     public void setImagePath(String imagePath) { this.imagePath = imagePath; }
-    public int getLayer() { return layer; }
     public void setLayer(int layer) { this.layer = layer; }
     public Integer getPositionX() { return positionX; }
     public void setPositionX(Integer positionX) { this.positionX = positionX; }
@@ -59,9 +77,7 @@ public class ImageSegment {
     public void setScale(Double scale) { this.scale = scale; }
     public Double getOpacity() { return opacity; }
     public void setOpacity(Double opacity) { this.opacity = opacity; }
-    public double getTimelineStartTime() { return timelineStartTime; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
-    public double getTimelineEndTime() { return timelineEndTime; }
     public void setTimelineEndTime(double timelineEndTime) { this.timelineEndTime = timelineEndTime; }
     public int getWidth() { return width; }
     public void setWidth(int width) { this.width = width; }

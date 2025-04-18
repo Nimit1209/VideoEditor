@@ -8,6 +8,7 @@ import com.example.videoeditor.repository.UserRepository;
 import com.example.videoeditor.security.JwtUtil;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
@@ -138,6 +139,10 @@ public class ProjectController {
             Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : null;
             Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
             Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null;
+            // Extract createAudioSegment, support both createAudioSegment and skipAudio for backward compatibility
+            Boolean createAudioSegment = request.get("createAudioSegment") != null ?
+                    Boolean.valueOf(request.get("createAudioSegment").toString()) :
+                    (request.get("skipAudio") != null ? !Boolean.valueOf(request.get("skipAudio").toString()) : true);
 
             // Validate required parameters
             if (videoPath == null) {
@@ -155,7 +160,8 @@ public class ProjectController {
                     timelineStartTime,
                     timelineEndTime,
                     startTime,
-                    endTime
+                    endTime,
+                    createAudioSegment
             );
 
             // Retrieve the newly added video and audio segments
@@ -172,14 +178,14 @@ public class ProjectController {
                     .orElse(null);
 
             // Prepare response
-            Map<String, Object> response = new HashMap<>(); // Changed to Map<String, Object> to support Integer
+            Map<String, Object> response = new HashMap<>();
             response.put("videoSegmentId", addedVideoSegment.getId());
             if (addedAudioSegment != null) {
                 response.put("audioSegmentId", addedAudioSegment.getId());
-                response.put("audioLayer", addedAudioSegment.getLayer()); // NEW: Include audio layer
+                response.put("audioLayer", addedAudioSegment.getLayer());
             }
 
-            return ResponseEntity.ok(response); // Updated to return response map
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding video to timeline: " + e.getMessage());
@@ -865,6 +871,129 @@ public class ProjectController {
         }
     }
 
+    @PostMapping("/{projectId}/add-transition")
+    public ResponseEntity<?> addTransition(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String type = (String) request.get("type");
+            Double duration = request.get("duration") != null ? Double.valueOf(request.get("duration").toString()) : null;
+            String fromSegmentId = (String) request.get("fromSegmentId"); // Can be null
+            String toSegmentId = (String) request.get("toSegmentId");
+            Integer layer = request.get("layer") != null ? Integer.valueOf(request.get("layer").toString()) : null;
+            @SuppressWarnings("unchecked")
+            Map<String, String> parameters = request.containsKey("parameters") ? (Map<String, String>) request.get("parameters") : null;
+
+            // Validate required parameters, allowing fromSegmentId to be null
+            if (type == null || duration == null || toSegmentId == null || layer == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: type, duration, toSegmentId, layer");
+            }
+            if (duration <= 0) {
+                return ResponseEntity.badRequest().body("Duration must be positive");
+            }
+
+            videoEditingService.addTransition(sessionId, type, duration, fromSegmentId, toSegmentId, layer, parameters);
+
+            // Retrieve the newly added transition
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            Transition addedTransition = timelineState.getTransitions().stream()
+                    .filter(t -> t.getToSegmentId().equals(toSegmentId) &&
+                            (fromSegmentId == null ? t.getFromSegmentId() == null : t.getFromSegmentId() != null && t.getFromSegmentId().equals(fromSegmentId)) &&
+                            t.getLayer() == layer)
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Failed to find added transition"));
+
+            return ResponseEntity.ok(Map.of(
+                    "transitionId", addedTransition.getId(),
+                    "type", addedTransition.getType(),
+                    "duration", addedTransition.getDuration(),
+                    "fromSegmentId", addedTransition.getFromSegmentId(),
+                    "toSegmentId", addedTransition.getToSegmentId(),
+                    "layer", addedTransition.getLayer(),
+                    "timelineStartTime", addedTransition.getTimelineStartTime()
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error adding transition: " + e.getMessage());
+        }
+    }
+
+    // NEW: Endpoint to update a transition
+    @PutMapping("/{projectId}/update-transition")
+    public ResponseEntity<?> updateTransition(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String transitionId = (String) request.get("transitionId");
+            String type = (String) request.get("type");
+            Double duration = request.containsKey("duration") ? Double.valueOf(request.get("duration").toString()) : null;
+            String fromSegmentId = (String) request.get("fromSegmentId");
+            String toSegmentId = (String) request.get("toSegmentId");
+            Integer layer = request.containsKey("layer") ? Integer.valueOf(request.get("layer").toString()) : null;
+            @SuppressWarnings("unchecked")
+            Map<String, String> parameters = request.containsKey("parameters") ? (Map<String, String>) request.get("parameters") : null;
+
+            if (transitionId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: transitionId");
+            }
+            if (duration != null && duration <= 0) {
+                return ResponseEntity.badRequest().body("Duration must be positive");
+            }
+
+            videoEditingService.updateTransition(sessionId, transitionId, type, duration, fromSegmentId, toSegmentId, layer, parameters);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating transition: " + e.getMessage());
+        }
+    }
+
+    // NEW: Endpoint to remove a transition
+    @DeleteMapping("/{projectId}/remove-transition")
+    public ResponseEntity<?> removeTransition(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestParam String transitionId) {
+        try {
+            User user = getUserFromToken(token);
+
+            if (transitionId == null) {
+                return ResponseEntity.badRequest().body("Missing required parameter: transitionId");
+            }
+
+            videoEditingService.removeTransition(sessionId, transitionId);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error removing transition: " + e.getMessage());
+        }
+    }
+
+    // NEW: Endpoint to get all transitions
+    @GetMapping("/{projectId}/transitions")
+    public ResponseEntity<List<Transition>> getTransitions(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId) {
+        try {
+            User user = getUserFromToken(token);
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            return ResponseEntity.ok(timelineState.getTransitions());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null);
+        }
+    }
+
     // Delete Video Segment from Timeline
     @DeleteMapping("/timeline/video/{sessionId}/{segmentId}")
     public ResponseEntity<String> deleteVideoFromTimeline(
@@ -945,6 +1074,39 @@ public class ProjectController {
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error deleting project: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/{projectId}/audio/{filename:.+}")
+    public ResponseEntity<Resource> serveAudio(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String filename) {
+        try {
+            User user = getUserFromToken(token);
+            Project project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+            if (!project.getUser().getId().equals(user.getId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
+            }
+
+            // Define the directory where audio files are stored
+            String audioDirectory = "audio/projects/" + projectId + "/extracted/";
+            File audioFile = new File(audioDirectory, filename);
+            if (!audioFile.exists() || !audioFile.isFile()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            }
+
+            Resource resource = new FileSystemResource(audioFile);
+            String contentType = filename.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "application/octet-stream";
+
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+        } catch (Exception e) {
+            System.err.println("Error serving audio: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
 }
