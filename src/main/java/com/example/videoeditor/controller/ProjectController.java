@@ -289,22 +289,22 @@ public class ProjectController {
             Double timelineStartTime = request.get("timelineStartTime") != null ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.get("timelineEndTime") != null ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             String fontFamily = (String) request.get("fontFamily");
-            Integer fontSize = request.get("fontSize") != null ? Integer.valueOf(request.get("fontSize").toString()) : null;
+            Double scale = request.get("scale") != null ? Double.valueOf(request.get("scale").toString()) : null; // Replaced fontSize
             String fontColor = (String) request.get("fontColor");
             String backgroundColor = (String) request.get("backgroundColor");
             Integer positionX = request.get("positionX") != null ? Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.get("positionY") != null ? Integer.valueOf(request.get("positionY").toString()) : null;
             Double opacity = request.get("opacity") != null ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
 
-            if (text == null || layer == null || timelineStartTime == null || timelineEndTime == null || fontSize == null) {
-                return ResponseEntity.badRequest().body("Missing required parameters: text, layer, timelineStartTime, timelineEndTime, fontSize");
+            if (text == null || layer == null || timelineStartTime == null || timelineEndTime == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: text, layer, timelineStartTime, timelineEndTime, scale");
             }
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
 
             videoEditingService.addTextToTimeline(sessionId, text, layer, timelineStartTime, timelineEndTime,
-                    fontFamily, fontSize, fontColor, backgroundColor, positionX, positionY, opacity);
+                    fontFamily, scale, fontColor, backgroundColor, positionX, positionY, opacity);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -325,7 +325,7 @@ public class ProjectController {
             String segmentId = (String) request.get("segmentId");
             String text = (String) request.get("text");
             String fontFamily = (String) request.get("fontFamily");
-            Integer fontSize = request.containsKey("fontSize") ? Integer.valueOf(request.get("fontSize").toString()) : null;
+            Double scale = request.containsKey("scale") ? Double.valueOf(request.get("scale").toString()) : null; // Replaced fontSize
             String fontColor = (String) request.get("fontColor");
             String backgroundColor = (String) request.get("backgroundColor");
             Integer positionX = request.containsKey("positionX") ? Integer.valueOf(request.get("positionX").toString()) : null;
@@ -359,7 +359,7 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
 
-            videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, fontSize,
+            videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, scale,
                     fontColor, backgroundColor, positionX, positionY, opacity, timelineStartTime, timelineEndTime, layer, parsedKeyframes);
 
             return ResponseEntity.ok().build();
@@ -375,11 +375,12 @@ public class ProjectController {
     public ResponseEntity<?> uploadAudio(
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
-            @RequestParam("audio") MultipartFile audioFile,
-            @RequestParam("audioFileName") String audioFileName) {
+            @RequestParam("audio") MultipartFile[] audioFiles,
+            @RequestParam(value = "audioFileNames", required = false) String[] audioFileNames
+    ) {
         try {
             User user = getUserFromToken(token);
-            Project updatedProject = videoEditingService.uploadAudioToProject(user, projectId, audioFile, audioFileName);
+            Project updatedProject = videoEditingService.uploadAudioToProject(user, projectId, audioFiles, audioFileNames);
             return ResponseEntity.ok(updatedProject);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -517,11 +518,12 @@ public class ProjectController {
     public ResponseEntity<?> uploadImage(
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
-            @RequestParam("image") MultipartFile imageFile,
-            @RequestParam("imageFileName") String imageFileName) {
+            @RequestParam("image") MultipartFile[] imageFiles,
+            @RequestParam(value = "imageFileNames", required = false) String[] imageFileNames
+    ) {
         try {
             User user = getUserFromToken(token);
-            Project updatedProject = videoEditingService.uploadImageToProject(user, projectId, imageFile, imageFileName);
+            Project updatedProject = videoEditingService.uploadImageToProject(user, projectId, imageFiles, imageFileNames);
             return ResponseEntity.ok(updatedProject);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

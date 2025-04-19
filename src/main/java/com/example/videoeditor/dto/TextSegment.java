@@ -9,12 +9,12 @@ public class TextSegment implements Segment {
     private String id = UUID.randomUUID().toString();
     private String text;
     private String fontFamily = "ARIAL";
-    private int fontSize = 24;
+    private Double scale = 1.0; // Replaced fontSize with scale
     private String fontColor = "white";
     private String backgroundColor = "transparent";
     private Integer positionX = 0;
     private Integer positionY = 0;
-    private Double opacity = 1.0; // Added opacity with default value 1.0
+    private Double opacity = 1.0;
     private double timelineStartTime;
     private double timelineEndTime;
     private Integer layer = 0;
@@ -68,8 +68,8 @@ public class TextSegment implements Segment {
     public void setText(String text) { this.text = text; }
     public String getFontFamily() { return fontFamily; }
     public void setFontFamily(String fontFamily) { this.fontFamily = fontFamily; }
-    public int getFontSize() { return fontSize; }
-    public void setFontSize(int fontSize) { this.fontSize = fontSize; }
+    public Double getScale() { return scale; } // Replaced getFontSize
+    public void setScale(Double scale) { this.scale = scale; } // Replaced setFontSize
     public String getFontColor() { return fontColor; }
     public void setFontColor(String fontColor) { this.fontColor = fontColor; }
     public String getBackgroundColor() { return backgroundColor; }
@@ -78,8 +78,8 @@ public class TextSegment implements Segment {
     public void setPositionX(Integer positionX) { this.positionX = positionX; }
     public Integer getPositionY() { return positionY; }
     public void setPositionY(Integer positionY) { this.positionY = positionY; }
-    public Double getOpacity() { return opacity; } // Added getter
-    public void setOpacity(Double opacity) { this.opacity = opacity; } // Added setter
+    public Double getOpacity() { return opacity; }
+    public void setOpacity(Double opacity) { this.opacity = opacity; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
     public void setTimelineEndTime(double timelineEndTime) { this.timelineEndTime = timelineEndTime; }
     public void setLayer(int layer) { this.layer = layer; }

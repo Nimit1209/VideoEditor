@@ -73,21 +73,27 @@ public class VideoController {
                 .body(resource);
     }
 
-
-
-
-    @PostMapping("/upload")
+    @PostMapping("/upload/{projectId}")
     public ResponseEntity<?> uploadVideo(
             @RequestHeader("Authorization") String token,
-            @RequestParam("file") MultipartFile file,
-            @RequestParam("title") String title
+            @PathVariable Long projectId,
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(value = "titles", required = false) String[] titles
     ) throws IOException {
-        String email = jwtUtil.extractEmail(token.substring(7));  // Extract user email from JWT
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        try {
+            String email = jwtUtil.extractEmail(token.substring(7)); // Extract user email from JWT
+            User user = userRepository.findByEmail(email)
+                    .orElseThrow(() -> new RuntimeException("User not found"));
 
-        Video video = videoService.uploadVideo(file, title, user);
-        return ResponseEntity.ok(video);
+            List<Video> videos = videoService.uploadVideos(files, titles, user); // Updated call
+            return ResponseEntity.ok(videos);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error uploading videos: " + e.getMessage());
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(e.getMessage());
+        }
     }
 
     @GetMapping("/my-videos")
@@ -100,43 +106,6 @@ public class VideoController {
         return ResponseEntity.ok(videos);
     }
 
-//    @PostMapping("/trim")
-//    public ResponseEntity<String> trimVideo(
-//            @RequestHeader("Authorization") String token,
-//            @RequestBody TrimRequest request) {
-//        try {
-//            String email = jwtUtil.extractEmail(token.substring(7));
-//            User user = userRepository.findByEmail(email)
-//                    .orElseThrow(() -> new RuntimeException("User not found"));
-//
-//            File trimmedFile = videoService.trimVideo(request.getVideoPath(), request.getStartTime(), request.getDuration(), user);
-//
-//            return ResponseEntity.ok(trimmedFile.getName());
-//        }  catch (Exception e) {
-//            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error: " + e.getMessage());
-//        }
-//    }
-
-//    @PostMapping("/merge")
-//    public ResponseEntity<String> mergeVideos(
-//            @RequestHeader("Authorization") String token,
-//            @RequestBody MergeRequest request) {
-//
-//        try {
-//            String email = jwtUtil.extractEmail(token.substring(7));
-//            // 🔹 Fetch user from database
-//            User user = userRepository.findByEmail(email)
-//                    .orElseThrow(() -> new RuntimeException("User not found"));
-//
-//            // 🔹 Call the updated service method with User
-//            File mergedFile = videoService.mergeVideos(request.getVideoPaths(), user);
-//
-//            return ResponseEntity.ok(mergedFile.getName());
-//
-//        } catch (Exception e) {
-//            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error: " + e.getMessage());
-//        }
-//    }
 
     @GetMapping("/edited-videos")
     public ResponseEntity<List<EditedVideo>> getUserEditedVideos(@RequestHeader("Authorization") String token) {
@@ -148,37 +117,12 @@ public class VideoController {
         return ResponseEntity.ok(editedVideos);
     }
 
-//    @PostMapping("/split")
-//    public ResponseEntity<?> splitVideo(
-//            @RequestHeader("Authorization") String token,
-//            @RequestBody SplitRequest request) {
-//        try {
-//            String email = jwtUtil.extractEmail(token.substring(7));
-//            User user = userRepository.findByEmail(email)
-//                    .orElseThrow(() -> new RuntimeException("User not found"));
-//
-//            SplitResult result = videoService.splitVideo(request.getVideoPath(),
-//                    request.getSplitTimeSeconds(),
-//                    user);
-//
-//            // Return both new video paths
-//            Map<String, String> response = new HashMap<>();
-//            response.put("firstPart", result.getFirstPartPath());
-//            response.put("secondPart", result.getSecondPartPath());
-//            return ResponseEntity.ok(response);
-//
-//        } catch (Exception e) {
-//            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-//                    .body("Error splitting video: " + e.getMessage());
-//        }
-//    }
 
     // Add this class at the end of VideoController
     public static class SplitRequest {
         private String videoPath;
         private double splitTimeSeconds;
         private String segmentId;
-
 
         public String getSegmentId() {
             return segmentId;
@@ -217,6 +161,5 @@ public class VideoController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
-
 
 }

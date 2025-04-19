@@ -11,28 +11,38 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 
 @Service
 public class VideoService {
     private final VideoRepository videoRepository;
-    private final String uploadDir = "videos/";
+    private final String uploadDir = "/Users/nimitpatel/Desktop/VideoEditor 2/videos/";
 
     public VideoService(VideoRepository videoRepository) {
         this.videoRepository = videoRepository;
         new File(uploadDir).mkdirs();
     }
 
-    public Video uploadVideo(MultipartFile file, String title, User user) throws IOException {
-        String filename = file.getOriginalFilename();
-        String filePath = uploadDir + filename;
-        file.transferTo(Paths.get(filePath));
+    public List<Video> uploadVideos(MultipartFile[] files, String[] titles, User user) throws IOException {
+        List<Video> uploadedVideos = new ArrayList<>();
 
-        Video video = new Video();
-        video.setTitle(title);
-        video.setFilePath(filename);
-        video.setUser(user);
-        return videoRepository.save(video);
+        for (int i = 0; i < files.length; i++) {
+            MultipartFile file = files[i];
+            String title = (titles != null && i < titles.length && titles[i] != null) ? titles[i] : file.getOriginalFilename();
+
+            String filename = file.getOriginalFilename();
+            String filePath = uploadDir + filename;
+            file.transferTo(Paths.get(filePath));
+
+            Video video = new Video();
+            video.setTitle(title);
+            video.setFilePath(filename);
+            video.setUser(user);
+            uploadedVideos.add(videoRepository.save(video));
+        }
+
+        return uploadedVideos;
     }
 
     public List<Video> getVideosByUser(String email) {
@@ -45,7 +55,7 @@ public class VideoService {
         String fullPath = Paths.get(baseDir, videoPath).toString();
 
         ProcessBuilder builder = new ProcessBuilder(
-                "/Users/nimitpatel/Desktop/ffmpeg-2025-02-26-git-99e2af4e78-full_build/bin/ffmpeg",
+                "/usr/local/bin/ffmpeg",
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",

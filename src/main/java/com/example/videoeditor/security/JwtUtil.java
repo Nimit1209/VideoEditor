@@ -12,7 +12,9 @@ import java.util.Date;
 public class JwtUtil {
     @Value("${jwt.secret}")
     private String secretKey;
-    private static final long EXPIRATION_TIME = 1000 * 60 * 60; // 1 hour
+
+    @Value("${jwt.expiration-time}")
+    private long EXPIRATION_TIME; // Inject from properties
 
     private Key getSigningKey() {
         return Keys.hmacShaKeyFor(secretKey.getBytes());
