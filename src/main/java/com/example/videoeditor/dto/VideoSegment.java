@@ -13,11 +13,21 @@ public class VideoSegment implements Segment {
     private Integer positionX = 0;
     private Integer positionY = 0;
     private Double scale = 1.0;
-    private Double opacity = 1.0; // Added opacity with default value 1.0
+    private Double opacity = 1.0;
     private Integer layer = 0;
     private double timelineStartTime;
     private double timelineEndTime;
     private String audioId;
+    private Double cropL = 0.0; // Crop percentage from left (0 to 100)
+    private Double cropR = 0.0; // Crop percentage from right (0 to 100)
+    private Double cropT = 0.0; // Crop percentage from top (0 to 100)
+    private Double cropB = 0.0; // Crop percentage from bottom (0 to 100)
+
+    private Map<String, List<Keyframe>> keyframes = new HashMap<>();
+
+    public VideoSegment() {
+        this.id = UUID.randomUUID().toString();
+    }
 
     public String getAudioId() {
         return audioId;
@@ -25,12 +35,6 @@ public class VideoSegment implements Segment {
 
     public void setAudioId(String audioId) {
         this.audioId = audioId;
-    }
-
-    private Map<String, List<Keyframe>> keyframes = new HashMap<>();
-
-    public VideoSegment() {
-        this.id = UUID.randomUUID().toString();
     }
 
     public Map<String, List<Keyframe>> getKeyframes() {
@@ -88,10 +92,17 @@ public class VideoSegment implements Segment {
     public void setPositionY(Integer positionY) { this.positionY = positionY; }
     public Double getScale() { return scale; }
     public void setScale(Double scale) { this.scale = scale; }
-    public Double getOpacity() { return opacity; } // Added getter
-    public void setOpacity(Double opacity) { this.opacity = opacity; } // Added setter
+    public Double getOpacity() { return opacity; }
+    public void setOpacity(Double opacity) { this.opacity = opacity; }
     public void setLayer(Integer layer) { this.layer = layer; }
     public void setTimelineStartTime(double timelineStartTime) { this.timelineStartTime = timelineStartTime; }
     public void setTimelineEndTime(double timelineEndTime) { this.timelineEndTime = timelineEndTime; }
-
+    public Double getCropL() { return cropL; }
+    public void setCropL(Double cropL) { this.cropL = cropL; }
+    public Double getCropR() { return cropR; }
+    public void setCropR(Double cropR) { this.cropR = cropR; }
+    public Double getCropT() { return cropT; }
+    public void setCropT(Double cropT) { this.cropT = cropT; }
+    public Double getCropB() { return cropB; }
+    public void setCropB(Double cropB) { this.cropB = cropB; }
 }

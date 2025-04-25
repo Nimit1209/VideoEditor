@@ -8,12 +8,14 @@ import com.example.videoeditor.repository.UserRepository;
 import com.example.videoeditor.security.JwtUtil;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -21,10 +23,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/projects")
@@ -96,6 +96,25 @@ public class ProjectController {
         return ResponseEntity.ok().build();
     }
 
+    @PostMapping("/{projectId}/saveForUndoRedo")
+    public ResponseEntity<?> saveForUndoRedo(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> payload) throws JsonProcessingException {
+        // Validate token and user
+        User user = getUserFromToken(token);
+
+        // Extract timeline_state from payload
+        ObjectMapper mapper = new ObjectMapper();
+        String timelineStateJson = mapper.writeValueAsString(payload.get("timelineState"));
+
+        // Save project with updated timeline_state for undo/redo
+        videoEditingService.saveForUndoRedo(projectId, sessionId, timelineStateJson);
+
+        return ResponseEntity.ok().build();
+    }
+
     @PostMapping("/{projectId}/export")
     public ResponseEntity<String> exportProject(
             @RequestHeader("Authorization") String token,
@@ -133,13 +152,12 @@ public class ProjectController {
 
             // Extract parameters from the request
             String videoPath = (String) request.get("videoPath");
-            Integer layer = (Integer) request.get("layer");
+            Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : null;
             Double timelineStartTime = request.get("timelineStartTime") != null ? ((Number) request.get("timelineStartTime")).doubleValue() : null;
             Double timelineEndTime = request.get("timelineEndTime") != null ? ((Number) request.get("timelineEndTime")).doubleValue() : null;
             Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : null;
             Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
             Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null;
-            // Extract createAudioSegment, support both createAudioSegment and skipAudio for backward compatibility
             Boolean createAudioSegment = request.get("createAudioSegment") != null ?
                     Boolean.valueOf(request.get("createAudioSegment").toString()) :
                     (request.get("skipAudio") != null ? !Boolean.valueOf(request.get("skipAudio").toString()) : true);
@@ -156,7 +174,7 @@ public class ProjectController {
             videoEditingService.addVideoToTimeline(
                     sessionId,
                     videoPath,
-                    layer != null ? layer : 0,
+                    layer,
                     timelineStartTime,
                     timelineEndTime,
                     startTime,
@@ -168,8 +186,8 @@ public class ProjectController {
             TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
             VideoSegment addedVideoSegment = timelineState.getSegments().stream()
                     .filter(s -> s.getSourceVideoPath().equals(videoPath) &&
-                            (startTime == null || s.getStartTime() == startTime) &&
-                            (timelineStartTime == null || s.getTimelineStartTime() == timelineStartTime))
+                            (startTime == null || Math.abs(s.getStartTime() - startTime) < 0.001) &&
+                            (timelineStartTime == null || Math.abs(s.getTimelineStartTime() - timelineStartTime) < 0.001))
                     .findFirst()
                     .orElseThrow(() -> new RuntimeException("Failed to find added video segment"));
             AudioSegment addedAudioSegment = timelineState.getAudioSegments().stream()
@@ -180,6 +198,7 @@ public class ProjectController {
             // Prepare response
             Map<String, Object> response = new HashMap<>();
             response.put("videoSegmentId", addedVideoSegment.getId());
+            response.put("layer", addedVideoSegment.getLayer()); // Include the assigned layer
             if (addedAudioSegment != null) {
                 response.put("audioSegmentId", addedAudioSegment.getId());
                 response.put("audioLayer", addedAudioSegment.getLayer());
@@ -205,12 +224,16 @@ public class ProjectController {
             Integer positionX = request.containsKey("positionX") ? Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.containsKey("positionY") ? Integer.valueOf(request.get("positionY").toString()) : null;
             Double scale = request.containsKey("scale") ? Double.valueOf(request.get("scale").toString()) : null;
-            Double opacity = request.containsKey("opacity") ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
+            Double opacity = request.containsKey("opacity") ? Double.valueOf(request.get("opacity").toString()) : null;
             Double timelineStartTime = request.containsKey("timelineStartTime") ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.containsKey("timelineEndTime") ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             Integer layer = request.containsKey("layer") ? Integer.valueOf(request.get("layer").toString()) : null;
             Double startTime = request.containsKey("startTime") ? Double.valueOf(request.get("startTime").toString()) : null;
             Double endTime = request.containsKey("endTime") ? Double.valueOf(request.get("endTime").toString()) : null;
+            Double cropL = request.containsKey("cropL") ? Double.valueOf(request.get("cropL").toString()) : null;
+            Double cropR = request.containsKey("cropR") ? Double.valueOf(request.get("cropR").toString()) : null;
+            Double cropT = request.containsKey("cropT") ? Double.valueOf(request.get("cropT").toString()) : null;
+            Double cropB = request.containsKey("cropB") ? Double.valueOf(request.get("cropB").toString()) : null;
             @SuppressWarnings("unchecked")
             Map<String, List<Map<String, Object>>> keyframes = request.containsKey("keyframes") ? (Map<String, List<Map<String, Object>>>) request.get("keyframes") : null;
 
@@ -229,15 +252,42 @@ public class ProjectController {
                 }
             }
 
+            // Validation
             if (segmentId == null) {
                 return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
             }
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
+            if (cropL != null && (cropL < 0 || cropL > 100)) {
+                return ResponseEntity.badRequest().body("cropL must be between 0 and 100");
+            }
+            if (cropR != null && (cropR < 0 || cropR > 100)) {
+                return ResponseEntity.badRequest().body("cropR must be between 0 and 100");
+            }
+            if (cropT != null && (cropT < 0 || cropT > 100)) {
+                return ResponseEntity.badRequest().body("cropT must be between 0 and 100");
+            }
+            if (cropB != null && (cropB < 0 || cropB > 100)) {
+                return ResponseEntity.badRequest().body("cropB must be between 0 and 100");
+            }
+            // Validate total crop if static values are provided (not keyframed)
+            if (parsedKeyframes == null ||
+                    (!parsedKeyframes.containsKey("cropL") && !parsedKeyframes.containsKey("cropR") &&
+                            !parsedKeyframes.containsKey("cropT") && !parsedKeyframes.containsKey("cropB"))) {
+                double totalHorizontalCrop = (cropL != null ? cropL : 0.0) + (cropR != null ? cropR : 0.0);
+                double totalVerticalCrop = (cropT != null ? cropT : 0.0) + (cropB != null ? cropB : 0.0);
+                if (totalHorizontalCrop >= 100) {
+                    return ResponseEntity.badRequest().body("Total horizontal crop (cropL + cropR) cannot be 100% or more");
+                }
+                if (totalVerticalCrop >= 100) {
+                    return ResponseEntity.badRequest().body("Total vertical crop (cropT + cropB) cannot be 100% or more");
+                }
+            }
 
-            videoEditingService.updateVideoSegment(sessionId, segmentId, positionX, positionY, scale, opacity,
-                    timelineStartTime, layer, timelineEndTime, startTime, endTime, parsedKeyframes);
+            videoEditingService.updateVideoSegment(
+                    sessionId, segmentId, positionX, positionY, scale, opacity, timelineStartTime, layer,
+                    timelineEndTime, startTime, endTime, cropL, cropR, cropT, cropB, parsedKeyframes);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -284,27 +334,72 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
+            // Existing parameters
             String text = (String) request.get("text");
             Integer layer = request.get("layer") != null ? Integer.valueOf(request.get("layer").toString()) : null;
             Double timelineStartTime = request.get("timelineStartTime") != null ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.get("timelineEndTime") != null ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             String fontFamily = (String) request.get("fontFamily");
-            Double scale = request.get("scale") != null ? Double.valueOf(request.get("scale").toString()) : null; // Replaced fontSize
+            Double scale = request.get("scale") != null ? Double.valueOf(request.get("scale").toString()) : null;
             String fontColor = (String) request.get("fontColor");
             String backgroundColor = (String) request.get("backgroundColor");
             Integer positionX = request.get("positionX") != null ? Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.get("positionY") != null ? Integer.valueOf(request.get("positionY").toString()) : null;
-            Double opacity = request.get("opacity") != null ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
+            Double opacity = request.get("opacity") != null ? Double.valueOf(request.get("opacity").toString()) : null;
+            String alignment = (String) request.get("alignment");
 
+            // New parameters
+            Double backgroundOpacity = request.get("backgroundOpacity") != null ? Double.valueOf(request.get("backgroundOpacity").toString()) : null;
+            Integer backgroundBorderWidth = request.get("backgroundBorderWidth") != null ? Integer.valueOf(request.get("backgroundBorderWidth").toString()) : null;
+            String backgroundBorderColor = (String) request.get("backgroundBorderColor");
+            Integer backgroundPadding = request.get("backgroundPadding") != null ? Integer.valueOf(request.get("backgroundPadding").toString()) : null;
+            Integer backgroundBorderRadius = request.get("backgroundBorderRadius") != null ? Integer.valueOf(request.get("backgroundBorderRadius").toString()) : null;
+            String shadowColor = (String) request.get("shadowColor");
+            Integer shadowOffsetX = request.get("shadowOffsetX") != null ? Integer.valueOf(request.get("shadowOffsetX").toString()) : null;
+            Integer shadowOffsetY = request.get("shadowOffsetY") != null ? Integer.valueOf(request.get("shadowOffsetY").toString()) : null;
+            Double shadowBlurRadius = request.get("shadowBlurRadius") != null ? Double.valueOf(request.get("shadowBlurRadius").toString()) : null;
+            Double shadowSpread = request.get("shadowSpread") != null ? Double.valueOf(request.get("shadowSpread").toString()) : null;
+            Double shadowOpacity = request.get("shadowOpacity") != null ? Double.valueOf(request.get("shadowOpacity").toString()) : null;
+
+            // Existing validation
             if (text == null || layer == null || timelineStartTime == null || timelineEndTime == null) {
-                return ResponseEntity.badRequest().body("Missing required parameters: text, layer, timelineStartTime, timelineEndTime, scale");
+                return ResponseEntity.badRequest().body("Missing required parameters: text, layer, timelineStartTime, timelineEndTime");
             }
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
+            if (alignment != null && !Arrays.asList("left", "right", "center").contains(alignment)) {
+                return ResponseEntity.badRequest().body("Alignment must be 'left', 'right', or 'center'");
+            }
+
+            // New validation
+            if (backgroundOpacity != null && (backgroundOpacity < 0 || backgroundOpacity > 1)) {
+                return ResponseEntity.badRequest().body("Background opacity must be between 0 and 1");
+            }
+            if (backgroundBorderWidth != null && backgroundBorderWidth < 0) {
+                return ResponseEntity.badRequest().body("Background border width must be non-negative");
+            }
+            if (backgroundPadding != null && backgroundPadding < 0) {
+                return ResponseEntity.badRequest().body("Background padding must be non-negative");
+            }
+            if (backgroundBorderRadius != null && backgroundBorderRadius < 0) {
+                return ResponseEntity.badRequest().body("Background border radius must be non-negative");
+            }
+            if (shadowBlurRadius != null && shadowBlurRadius < 0) {
+                return ResponseEntity.badRequest().body("Shadow blur radius must be non-negative");
+            }
+            if (shadowSpread != null && shadowSpread < 0) {
+                return ResponseEntity.badRequest().body("Shadow spread must be non-negative");
+            }
+            if (shadowOpacity != null && (shadowOpacity < 0 || shadowOpacity > 1)) {
+                return ResponseEntity.badRequest().body("Shadow opacity must be between 0 and 1");
+            }
 
             videoEditingService.addTextToTimeline(sessionId, text, layer, timelineStartTime, timelineEndTime,
-                    fontFamily, scale, fontColor, backgroundColor, positionX, positionY, opacity);
+                    fontFamily, scale, fontColor, backgroundColor, positionX, positionY, opacity, alignment,
+                    backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundPadding,
+                    shadowColor, shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpread, shadowOpacity,
+                    backgroundBorderRadius);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -322,25 +417,42 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
+            // Existing parameters
             String segmentId = (String) request.get("segmentId");
             String text = (String) request.get("text");
             String fontFamily = (String) request.get("fontFamily");
-            Double scale = request.containsKey("scale") ? Double.valueOf(request.get("scale").toString()) : null; // Replaced fontSize
+            Double scale = request.containsKey("scale") ? Double.valueOf(request.get("scale").toString()) : null;
             String fontColor = (String) request.get("fontColor");
             String backgroundColor = (String) request.get("backgroundColor");
             Integer positionX = request.containsKey("positionX") ? Integer.valueOf(request.get("positionX").toString()) : null;
             Integer positionY = request.containsKey("positionY") ? Integer.valueOf(request.get("positionY").toString()) : null;
-            Double opacity = request.containsKey("opacity") ? Double.valueOf(request.get("opacity").toString()) : null; // Added opacity
+            Double opacity = request.containsKey("opacity") ? Double.valueOf(request.get("opacity").toString()) : null;
             Double timelineStartTime = request.containsKey("timelineStartTime") ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.containsKey("timelineEndTime") ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
             Integer layer = request.containsKey("layer") ? Integer.valueOf(request.get("layer").toString()) : null;
+            String alignment = (String) request.get("alignment");
             @SuppressWarnings("unchecked")
             Map<String, List<Map<String, Object>>> keyframes = request.containsKey("keyframes") ? (Map<String, List<Map<String, Object>>>) request.get("keyframes") : null;
 
+            // New parameters
+            Double backgroundOpacity = request.containsKey("backgroundOpacity") ? Double.valueOf(request.get("backgroundOpacity").toString()) : null;
+            Integer backgroundBorderWidth = request.containsKey("backgroundBorderWidth") ? Integer.valueOf(request.get("backgroundBorderWidth").toString()) : null;
+            String backgroundBorderColor = (String) request.get("backgroundBorderColor");
+            Integer backgroundPadding = request.containsKey("backgroundPadding") ? Integer.valueOf(request.get("backgroundPadding").toString()) : null;
+            Integer backgroundBorderRadius = request.containsKey("backgroundBorderRadius") ? Integer.valueOf(request.get("backgroundBorderRadius").toString()) : null;
+            String shadowColor = (String) request.get("shadowColor");
+            Integer shadowOffsetX = request.containsKey("shadowOffsetX") ? Integer.valueOf(request.get("shadowOffsetX").toString()) : null;
+            Integer shadowOffsetY = request.containsKey("shadowOffsetY") ? Integer.valueOf(request.get("shadowOffsetY").toString()) : null;
+            Double shadowBlurRadius = request.containsKey("shadowBlurRadius") ? Double.valueOf(request.get("shadowBlurRadius").toString()) : null;
+            Double shadowSpread = request.containsKey("shadowSpread") ? Double.valueOf(request.get("shadowSpread").toString()) : null;
+            Double shadowOpacity = request.containsKey("shadowOpacity") ? Double.valueOf(request.get("shadowOpacity").toString()) : null;
+
+            // Parse keyframes
             Map<String, List<Keyframe>> parsedKeyframes = null;
             if (keyframes != null) {
                 parsedKeyframes = new HashMap<>();
                 for (Map.Entry<String, List<Map<String, Object>>> entry : keyframes.entrySet()) {
+                    String property = entry.getKey();
                     List<Keyframe> kfList = new ArrayList<>();
                     for (Map<String, Object> kfData : entry.getValue()) {
                         double time = Double.valueOf(kfData.get("time").toString());
@@ -352,15 +464,48 @@ public class ProjectController {
                 }
             }
 
+            // Existing validation
             if (segmentId == null) {
                 return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
+            }
+            if (text == null || text.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body("Text content cannot be null or empty");
             }
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
+            if (alignment != null && !Arrays.asList("left", "right", "center").contains(alignment)) {
+                return ResponseEntity.badRequest().body("Alignment must be 'left', 'right', or 'center'");
+            }
+
+            // New validation
+            if (backgroundOpacity != null && (backgroundOpacity < 0 || backgroundOpacity > 1)) {
+                return ResponseEntity.badRequest().body("Background opacity must be between 0 and 1");
+            }
+            if (backgroundBorderWidth != null && backgroundBorderWidth < 0) {
+                return ResponseEntity.badRequest().body("Background border width must be non-negative");
+            }
+            if (backgroundPadding != null && backgroundPadding < 0) {
+                return ResponseEntity.badRequest().body("Background padding must be non-negative");
+            }
+            if (backgroundBorderRadius != null && backgroundBorderRadius < 0) {
+                return ResponseEntity.badRequest().body("Background border radius must be non-negative");
+            }
+            if (shadowBlurRadius != null && shadowBlurRadius < 0) {
+                return ResponseEntity.badRequest().body("Shadow blur radius must be non-negative");
+            }
+            if (shadowSpread != null && shadowSpread < 0) {
+                return ResponseEntity.badRequest().body("Shadow spread must be non-negative");
+            }
+            if (shadowOpacity != null && (shadowOpacity < 0 || shadowOpacity > 1)) {
+                return ResponseEntity.badRequest().body("Shadow opacity must be between 0 and 1");
+            }
 
             videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, scale,
-                    fontColor, backgroundColor, positionX, positionY, opacity, timelineStartTime, timelineEndTime, layer, parsedKeyframes);
+                    fontColor, backgroundColor, positionX, positionY, opacity, timelineStartTime, timelineEndTime, layer, alignment,
+                    backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundPadding,
+                    shadowColor, shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpread, shadowOpacity,
+                    backgroundBorderRadius, parsedKeyframes);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -547,7 +692,8 @@ public class ProjectController {
             Double timelineEndTime = request.get("timelineEndTime") != null ?
                     ((Number) request.get("timelineEndTime")).doubleValue() : null;
             String imageFileName = (String) request.get("imageFileName");
-            Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null; // Added opacity
+            Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null;
+            Boolean isElement = request.get("isElement") != null ? Boolean.valueOf(request.get("isElement").toString()) : false;
 
             if (layer < 0) {
                 return ResponseEntity.badRequest().body("Layer must be a non-negative integer");
@@ -559,24 +705,33 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Timeline end time must be greater than start time");
             }
             if (imageFileName == null || imageFileName.isEmpty()) {
-                return ResponseEntity.badRequest().body("Image filename is required");
+                return ResponseEntity.badRequest().body("Image or element filename is required");
             }
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
 
             videoEditingService.addImageToTimelineFromProject(
-                    user, sessionId, projectId, layer, timelineStartTime, timelineEndTime, null, imageFileName, opacity);
-            return ResponseEntity.ok().build();
+                    user, sessionId, projectId, layer, timelineStartTime, timelineEndTime, null, imageFileName, opacity, isElement);
+
+            // Retrieve the updated timeline state to get the newly added segment
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            ImageSegment newSegment = timelineState.getImageSegments().stream()
+                    .filter(segment -> segment.getImagePath().endsWith(imageFileName) &&
+                            segment.getLayer() == layer &&
+                            Math.abs(segment.getTimelineStartTime() - timelineStartTime) < 0.001)
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Failed to find newly added segment"));
+
+            return ResponseEntity.ok(newSegment);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error adding project image to timeline: " + e.getMessage());
+                    .body("Error adding project image or element to timeline: " + e.getMessage());
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(e.getMessage());
         }
     }
-
 
     @PutMapping("/{projectId}/update-image")
     public ResponseEntity<?> updateImageSegment(
@@ -597,6 +752,10 @@ public class ProjectController {
             Boolean maintainAspectRatio = request.containsKey("maintainAspectRatio") ? Boolean.valueOf(request.get("maintainAspectRatio").toString()) : null;
             Double timelineStartTime = request.containsKey("timelineStartTime") ? Double.valueOf(request.get("timelineStartTime").toString()) : null;
             Double timelineEndTime = request.containsKey("timelineEndTime") ? Double.valueOf(request.get("timelineEndTime").toString()) : null;
+            Double cropL = request.containsKey("cropL") ? Double.valueOf(request.get("cropL").toString()) : null;
+            Double cropR = request.containsKey("cropR") ? Double.valueOf(request.get("cropR").toString()) : null;
+            Double cropT = request.containsKey("cropT") ? Double.valueOf(request.get("cropT").toString()) : null;
+            Double cropB = request.containsKey("cropB") ? Double.valueOf(request.get("cropB").toString()) : null;
             @SuppressWarnings("unchecked")
             Map<String, String> filters = request.containsKey("filters") ? (Map<String, String>) request.get("filters") : null;
             @SuppressWarnings("unchecked")
@@ -619,6 +778,7 @@ public class ProjectController {
                 }
             }
 
+            // Validation
             if (segmentId == null) {
                 return ResponseEntity.badRequest().body("Missing required parameter: segmentId");
             }
@@ -631,10 +791,36 @@ public class ProjectController {
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
+            if (cropL != null && (cropL < 0 || cropL > 100)) {
+                return ResponseEntity.badRequest().body("cropL must be between 0 and 100");
+            }
+            if (cropR != null && (cropR < 0 || cropR > 100)) {
+                return ResponseEntity.badRequest().body("cropR must be between 0 and 100");
+            }
+            if (cropT != null && (cropT < 0 || cropT > 100)) {
+                return ResponseEntity.badRequest().body("cropT must be between 0 and 100");
+            }
+            if (cropB != null && (cropB < 0 || cropB > 100)) {
+                return ResponseEntity.badRequest().body("cropB must be between 0 and 100");
+            }
+            // Validate total crop if static values are provided (not keyframed)
+            if (parsedKeyframes == null ||
+                    (!parsedKeyframes.containsKey("cropL") && !parsedKeyframes.containsKey("cropR") &&
+                            !parsedKeyframes.containsKey("cropT") && !parsedKeyframes.containsKey("cropB"))) {
+                double totalHorizontalCrop = (cropL != null ? cropL : 0.0) + (cropR != null ? cropR : 0.0);
+                double totalVerticalCrop = (cropT != null ? cropT : 0.0) + (cropB != null ? cropB : 0.0);
+                if (totalHorizontalCrop >= 100) {
+                    return ResponseEntity.badRequest().body("Total horizontal crop (cropL + cropR) cannot be 100% or more");
+                }
+                if (totalVerticalCrop >= 100) {
+                    return ResponseEntity.badRequest().body("Total vertical crop (cropT + cropB) cannot be 100% or more");
+                }
+            }
 
             videoEditingService.updateImageSegment(
                     sessionId, segmentId, positionX, positionY, scale, opacity, layer,
-                    customWidth, customHeight, maintainAspectRatio, filters, filtersToRemove, timelineStartTime, timelineEndTime, parsedKeyframes);
+                    customWidth, customHeight, maintainAspectRatio, filters, filtersToRemove,
+                    timelineStartTime, timelineEndTime, cropL, cropR, cropT, cropB, parsedKeyframes);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -664,27 +850,57 @@ public class ProjectController {
         }
     }
 
-    @GetMapping("/{projectId}/images/{filename}")
+    @GetMapping("/{projectId}/images/{filename:.+}")
     public ResponseEntity<Resource> serveImage(
+            @RequestHeader(value = "Authorization", required = false) String token,
             @PathVariable Long projectId,
             @PathVariable String filename) {
         try {
-            // Define the directory where images are stored
-            String imageDirectory = "images/projects/" + projectId + "/";
-            Path filePath = Paths.get(imageDirectory).resolve(filename).normalize();
-            Resource resource = new UrlResource(filePath.toUri());
+            User user = null;
+            if (token != null && !token.isEmpty()) {
+                // Authenticate user if token is provided
+                user = getUserFromToken(token);
+            }
+
+            // Verify project exists
+            Project project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+
+            // Check if the file is in the elements directory first (global access)
+            String elementsDirectory = "/Users/nimitpatel/Desktop/VideoEditor 2/elements";
+            Path elementsPath = Paths.get(elementsDirectory).resolve(filename).normalize();
+            Resource resource = new UrlResource(elementsPath.toUri());
 
             if (resource.exists() && resource.isReadable()) {
-                // Determine the content type based on file extension
                 String contentType = determineContentType(filename);
                 return ResponseEntity.ok()
                         .contentType(MediaType.parseMediaType(contentType))
                         .body(resource);
-            } else {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
+
+            // If not in elements, check project-specific images (requires ownership)
+            if (user != null && !project.getUser().getId().equals(user.getId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
+            }
+
+            String projectImageDirectory = "images/projects/" + projectId + "/";
+            Path projectImagePath = Paths.get(projectImageDirectory).resolve(filename).normalize();
+            resource = new UrlResource(projectImagePath.toUri());
+
+            if (resource.exists() && resource.isReadable()) {
+                String contentType = determineContentType(filename);
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .body(resource);
+            }
+
+            // File not found in either location
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+
+        } catch (RuntimeException e) {
+            System.err.println("Error serving image: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
         } catch (Exception e) {
-            // Log the error for debugging
             System.err.println("Error serving image: " + e.getMessage());
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
@@ -1081,34 +1297,95 @@ public class ProjectController {
 
     @GetMapping("/{projectId}/audio/{filename:.+}")
     public ResponseEntity<Resource> serveAudio(
-            @RequestHeader("Authorization") String token,
+            @RequestHeader(value = "Authorization", required = false) String token,
             @PathVariable Long projectId,
             @PathVariable String filename) {
         try {
-            User user = getUserFromToken(token);
+            User user = null;
+            if (token != null && !token.isEmpty()) {
+                // Authenticate user if token is provided
+                user = getUserFromToken(token);
+            }
+
+            // Verify project exists
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
-            if (!project.getUser().getId().equals(user.getId())) {
+
+            // If token is provided, verify user has access
+            if (user != null && !project.getUser().getId().equals(user.getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            // Define the directory where audio files are stored
-            String audioDirectory = "audio/projects/" + projectId + "/extracted/";
-            File audioFile = new File(audioDirectory, filename);
+            // Define possible audio file paths
+            String baseAudioDirectory = "audio/projects/" + projectId + "/";
+            String extractedAudioDirectory = baseAudioDirectory + "extracted/";
+            File audioFile = new File(baseAudioDirectory, filename);
+
+            // Check if file exists in base directory, if not, try extracted directory
+            if (!audioFile.exists() || !audioFile.isFile()) {
+                audioFile = new File(extractedAudioDirectory, filename);
+            }
+
+            // Verify file existence
             if (!audioFile.exists() || !audioFile.isFile()) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
 
+            // Create resource and determine content type
             Resource resource = new FileSystemResource(audioFile);
-            String contentType = filename.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "application/octet-stream";
+            String contentType = determineAudioContentType(filename);
 
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(contentType))
                     .body(resource);
+
+        } catch (RuntimeException e) {
+            System.err.println("Error serving audio: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
         } catch (Exception e) {
             System.err.println("Error serving audio: " + e.getMessage());
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
+
+    // Helper method to determine audio content type
+    private String determineAudioContentType(String filename) {
+        filename = filename.toLowerCase();
+        if (filename.endsWith(".mp3")) return "audio/mpeg";
+        if (filename.endsWith(".wav")) return "audio/wav";
+        if (filename.endsWith(".ogg")) return "audio/ogg";
+        return "application/octet-stream"; // Default fallback
+    }
+
+
+    @PostMapping("/elements/upload")
+    public ResponseEntity<List<ElementDto>> uploadElements(
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(value = "title", required = false) String title,
+            Authentication authentication
+    ) throws IOException {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
+        }
+
+        String email = (String) authentication.getPrincipal();
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found with email: " + email));
+
+        List<ElementDto> elements = videoEditingService.uploadElements(files, title, user);
+        return ResponseEntity.ok(elements);
+    }
+
+    @GetMapping("/elements")
+    public ResponseEntity<List<ElementDto>> getElements(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
+        }
+
+        String email = (String) authentication.getPrincipal();
+        List<ElementDto> elements = videoEditingService.getElementsByUser(email);
+        return ResponseEntity.ok(elements);
+    }
+
 }

@@ -55,7 +55,7 @@ public class VideoService {
         String fullPath = Paths.get(baseDir, videoPath).toString();
 
         ProcessBuilder builder = new ProcessBuilder(
-                "/usr/local/bin/ffmpeg",
+                "/usr/local/bin/ffprobe",
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",

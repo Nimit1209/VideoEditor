@@ -12,7 +12,7 @@ public class ImageSegment implements Segment {
     private Integer positionX = 0;
     private Integer positionY = 0;
     private Double scale = 1.0;
-    private Double opacity = 1.0; // Already present, just ensuring consistency
+    private Double opacity = 1.0;
     private double timelineStartTime;
     private double timelineEndTime;
     private int width;
@@ -20,8 +20,21 @@ public class ImageSegment implements Segment {
     private int customWidth;
     private int customHeight;
     private boolean maintainAspectRatio = true;
+    private boolean isElement;
+    private Double cropL = 0.0; // Crop percentage from left (0 to 100)
+    private Double cropR = 0.0; // Crop percentage from right (0 to 100)
+    private Double cropT = 0.0; // Crop percentage from top (0 to 100)
+    private Double cropB = 0.0; // Crop percentage from bottom (0 to 100)
 
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
+
+    public boolean isElement() {
+        return isElement;
+    }
+
+    public void setElement(boolean element) {
+        isElement = element;
+    }
 
     public Map<String, List<Keyframe>> getKeyframes() {
         return keyframes;
@@ -91,4 +104,12 @@ public class ImageSegment implements Segment {
     public void setMaintainAspectRatio(boolean maintainAspectRatio) { this.maintainAspectRatio = maintainAspectRatio; }
     public int getEffectiveWidth() { return customWidth > 0 ? customWidth : (int) (width * (scale != null ? scale : 1.0)); }
     public int getEffectiveHeight() { return customHeight > 0 ? customHeight : (int) (height * (scale != null ? scale : 1.0)); }
+    public Double getCropL() { return cropL; }
+    public void setCropL(Double cropL) { this.cropL = cropL; }
+    public Double getCropR() { return cropR; }
+    public void setCropR(Double cropR) { this.cropR = cropR; }
+    public Double getCropT() { return cropT; }
+    public void setCropT(Double cropT) { this.cropT = cropT; }
+    public Double getCropB() { return cropB; }
+    public void setCropB(Double cropB) { this.cropB = cropB; }
 }

@@ -56,6 +56,19 @@ public class Project {
     @Column(columnDefinition = "TEXT")
     private String extractedAudioJson;
 
+    // New field for elements
+    @Column(name = "element_json", columnDefinition = "TEXT")
+    private String elementJson;
+
+    // Getters and setters
+    public String getElementJson() {
+        return elementJson;
+    }
+
+    public void setElementJson(String elementJson) {
+        this.elementJson = elementJson;
+    }
+
     public String getExtractedAudioJson() {
         return extractedAudioJson;
     }

@@ -156,6 +156,15 @@ public class TimelineState {
                 }
             }
         }
+
+        for (ImageSegment segment : imageSegments) {
+            if (segment.getLayer() == layer &&
+                    startTime < segment.getTimelineEndTime() &&
+                    endTime > segment.getTimelineStartTime()) {
+                return false;
+            }
+        }
+
         return true;
     }
 }
