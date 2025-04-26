@@ -9,6 +9,7 @@ import com.example.videoeditor.security.JwtUtil;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
@@ -24,7 +25,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/projects")
@@ -34,6 +34,7 @@ public class ProjectController {
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
 
+    @Autowired
     public ProjectController(
             VideoEditingService videoEditingService,
             ProjectRepository projectRepository,

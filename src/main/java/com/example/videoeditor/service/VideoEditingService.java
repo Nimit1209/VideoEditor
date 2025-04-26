@@ -582,7 +582,7 @@ public class VideoEditingService {
                         break;
                 }
             }
-        } else {
+        }
             if (positionX != null) segmentToUpdate.setPositionX(positionX);
             if (positionY != null) segmentToUpdate.setPositionY(positionY);
             if (scale != null) segmentToUpdate.setScale(scale);
@@ -625,7 +625,7 @@ public class VideoEditingService {
             if (newTimelineDuration < newClipDuration) {
                 segmentToUpdate.setTimelineEndTime(roundToThreeDecimals(segmentToUpdate.getTimelineStartTime() + newClipDuration));
             }
-        }
+
 
         // Validate timeline position with rounded values
         TimelineState timelineState = session.getTimelineState();
@@ -784,7 +784,7 @@ public class VideoEditingService {
                         break;
                 }
             }
-        } else {
+        }
             if (text != null) textSegment.setText(text);
             if (fontFamily != null) textSegment.setFontFamily(fontFamily);
             if (scale != null) textSegment.setScale(scale);
@@ -821,7 +821,7 @@ public class VideoEditingService {
             if (shadowBlurRadius != null) textSegment.setShadowBlurRadius(shadowBlurRadius);
             if (shadowSpread != null) textSegment.setShadowSpread(shadowSpread);
             if (shadowOpacity != null) textSegment.setShadowOpacity(shadowOpacity);
-        }
+
 
         // Validate timeline position
         TimelineState timelineState = session.getTimelineState();
@@ -1044,7 +1044,7 @@ public class VideoEditingService {
                     targetSegment.setVolume(null);
                 }
             }
-        } else {
+        } 
             boolean timelineChanged = false;
             if (timelineStartTime != null) {
                 // MODIFIED: Round timelineStartTime to three decimal places
@@ -1138,7 +1138,7 @@ public class VideoEditingService {
                 targetSegment.setLayer(originalLayer);
                 throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + targetSegment.getLayer());
             }
-        }
+
 
         session.setLastAccessTime(System.currentTimeMillis());
     }
@@ -1443,7 +1443,7 @@ public class VideoEditingService {
                         break;
                 }
             }
-        } else {
+        }
             if (positionX != null) targetSegment.setPositionX(positionX);
             if (positionY != null) targetSegment.setPositionY(positionY);
             if (scale != null) targetSegment.setScale(scale);
@@ -1483,7 +1483,7 @@ public class VideoEditingService {
             if (filtersToRemove != null && !filtersToRemove.isEmpty()) {
                 timelineState.getFilters().removeIf(f -> f.getSegmentId().equals(targetSegment.getId()) && filtersToRemove.contains(f.getFilterId()));
             }
-        }
+
 
         // Validate timeline position
         timelineState.getImageSegments().remove(targetSegment);
