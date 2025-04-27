@@ -4,36 +4,32 @@ public class AuthResponse {
     private String token;
     private String email;
     private String name;
+    private String message;
+    private boolean isVerified;
 
-    public AuthResponse() {}
-
-    public AuthResponse(String token, String email, String name) {
+    // Update constructor
+    public AuthResponse(String token, String email, String name, String message, boolean isVerified) {
         this.token = token;
         this.email = email;
         this.name = name;
+        this.message = message;
+        this.isVerified = isVerified;
     }
 
-    public String getToken() {
-        return token;
+    // Add getters/setters for new fields
+    public String getMessage() {
+        return message;
     }
 
-    public void setToken(String token) {
-        this.token = token;
+    public void setMessage(String message) {
+        this.message = message;
     }
 
-    public String getEmail() {
-        return email;
+    public boolean isVerified() {
+        return isVerified;
     }
 
-    public void setEmail(String email) {
-        this.email = email;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
+    public void setVerified(boolean verified) {
+        isVerified = verified;
     }
 }

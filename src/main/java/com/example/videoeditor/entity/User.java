@@ -28,6 +28,16 @@ public class User {
     @Column(name = "first_login", nullable = false)
     private boolean firstLogin = true; // Default to true for new users
 
+    private boolean isEmailVerified; // New field
+
+    public boolean isEmailVerified() {
+        return isEmailVerified;
+    }
+
+    public void setEmailVerified(boolean emailVerified) {
+        isEmailVerified = emailVerified;
+    }
+
     public boolean isFirstLogin() {
         return firstLogin;
     }
