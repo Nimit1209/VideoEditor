@@ -22,6 +22,10 @@ public class AuthController {
         try {
             AuthResponse response = authService.register(request);
             return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            // Handle invalid email or domain errors
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new AuthResponse(null, request.getEmail(), null, e.getMessage(), false));
         } catch (MessagingException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new AuthResponse(null, request.getEmail(), null,
@@ -33,9 +37,15 @@ public class AuthController {
     public ResponseEntity<String> resendVerification(@RequestParam String email) {
         try {
             authService.resendVerificationEmail(email);
-            return ResponseEntity.ok("Verification email resent");
+            return ResponseEntity.ok("Verification email resent successfully");
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
+        } catch (MessagingException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to send verification email. Please try again.");
         } catch (Exception e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("An error occurred while resending the verification email. Please try again.");
         }
     }
 

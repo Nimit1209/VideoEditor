@@ -16,7 +16,18 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.xbill.DNS.Lookup;
+import org.xbill.DNS.MXRecord;
+import org.xbill.DNS.Record;
+import org.xbill.DNS.TextParseException;
+import org.xbill.DNS.Type;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Optional;
@@ -42,12 +53,11 @@ public class AuthService {
         this.emailService = emailService;
     }
 
-
     @Transactional
     public AuthResponse register(AuthRequest request) throws MessagingException {
         // Enhanced email validation
         if (!isValidEmail(request.getEmail())) {
-            throw new RuntimeException("Please enter a valid email address");
+            throw new RuntimeException("Please enter a valid email address. The email does not exist or cannot receive mail.");
         }
 
         // Check email domain validity
@@ -229,6 +239,8 @@ public class AuthService {
         return jwtToken;
     }
 
+
+    @Transactional
     public void resendVerificationEmail(String email) throws MessagingException {
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found"));
@@ -237,23 +249,123 @@ public class AuthService {
             throw new RuntimeException("Email already verified");
         }
 
-        // Delete existing tokens for the user
+        // Delete existing tokens for the user and flush to ensure deletion is committed
+        System.out.println("Deleting existing verification tokens for user: " + email);
         verificationTokenRepository.deleteByUser(user);
+        verificationTokenRepository.flush(); // Ensure deletion is committed
+        System.out.println("Existing verification tokens deleted for user: " + email);
 
+        // Generate and save new token
         String token = UUID.randomUUID().toString();
         VerificationToken verificationToken = new VerificationToken(
                 token,
                 user,
                 LocalDateTime.now().plusHours(24)
         );
-        verificationTokenRepository.save(verificationToken);
+        System.out.println("Saving new verification token: " + token);
+        verificationTokenRepository.saveAndFlush(verificationToken); // Ensure save is committed
+        System.out.println("New verification token saved for user: " + email);
+
+        // Send verification email
         emailService.sendVerificationEmail(user.getEmail(), token);
+        System.out.println("Verification email sent to: " + email);
     }
 
     private boolean isValidEmail(String email) {
-
+        // Existing regex check
         String emailRegex = "^[A-Za-z0-9+_.-]+@(.+)$";
-        return email != null && email.matches(emailRegex);
+        if (email == null || !email.matches(emailRegex)) {
+            return false;
+        }
+
+        // Add SMTP-based email validation
+        return verifyEmailExists(email);
     }
 
+    private boolean verifyEmailExists(String email) {
+        try {
+            // Extract domain from email
+            String domain = email.substring(email.indexOf('@') + 1);
+
+            // Resolve MX records for the domain
+            Lookup lookup = new Lookup(domain, Type.MX);
+            Record[] records = lookup.run();
+            if (records == null || records.length == 0) {
+                System.out.println("No MX records found for domain: " + domain);
+                return false; // No MX records found
+            }
+
+            // Find the first MXRecord
+            MXRecord mxRecord = null;
+            for (Record record : records) {
+                if (record instanceof MXRecord) {
+                    mxRecord = (MXRecord) record;
+                    break;
+                }
+            }
+            if (mxRecord == null) {
+                System.out.println("No MXRecord found in records for domain: " + domain);
+                return false; // No MXRecord found
+            }
+
+            // Get the MX host
+            String mxHost = mxRecord.getTarget().toString();
+
+            // Connect to the mail server
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress(mxHost, 25), 5000); // 5-second timeout
+
+                // Perform SMTP handshake (simplified)
+                BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+
+                // Read server greeting
+                String greeting = reader.readLine();
+                if (greeting == null || !greeting.startsWith("220")) {
+                    System.out.println("Invalid SMTP greeting: " + greeting);
+                    return false;
+                }
+
+                // Send HELO command
+                writer.write("HELO example.com\r\n");
+                writer.flush();
+                String heloResponse = reader.readLine();
+                if (heloResponse == null || !heloResponse.startsWith("250")) {
+                    System.out.println("Invalid HELO response: " + heloResponse);
+                    return false;
+                }
+
+                // Send MAIL FROM command
+                writer.write("MAIL FROM:<verify@example.com>\r\n");
+                writer.flush();
+                String mailFromResponse = reader.readLine();
+                if (mailFromResponse == null || !mailFromResponse.startsWith("250")) {
+                    System.out.println("Invalid MAIL FROM response: " + mailFromResponse);
+                    return false;
+                }
+
+                // Send RCPT TO command to check recipient
+                writer.write("RCPT TO:<" + email + ">\r\n");
+                writer.flush();
+                String rcptToResponse = reader.readLine();
+                if (rcptToResponse == null) {
+                    System.out.println("No response for RCPT TO");
+                    return false;
+                }
+
+                // Check if the response code is 250 (recipient OK)
+                boolean isValid = rcptToResponse.startsWith("250");
+                if (!isValid) {
+                    System.out.println("RCPT TO response indicates email does not exist: " + rcptToResponse);
+                }
+                return isValid;
+            }
+        } catch (TextParseException e) {
+            System.out.println("Failed to parse domain for MX lookup: " + e.getMessage());
+            return false;
+        } catch (Exception e) {
+            System.out.println("Email verification failed for: " + email + ", error: " + e.getMessage());
+            return false;
+        }
+    }
 }
