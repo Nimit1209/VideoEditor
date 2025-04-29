@@ -15,6 +15,7 @@ import jakarta.mail.MessagingException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -41,6 +42,8 @@ public class AuthService {
         this.emailService = emailService;
     }
 
+
+    @Transactional
     public AuthResponse register(AuthRequest request) throws MessagingException {
         // Enhanced email validation
         if (!isValidEmail(request.getEmail())) {
@@ -81,7 +84,9 @@ public class AuthService {
                 user,
                 LocalDateTime.now().plusHours(24)
         );
+        System.out.println("Saving verification token: " + token); // Debug log
         verificationTokenRepository.save(verificationToken);
+        System.out.println("Verification token saved for user: " + user.getEmail()); // Debug log
 
         // Send verification email
         try {
@@ -177,7 +182,7 @@ public class AuthService {
             user.setName(name);
             user.setPassword(passwordEncoder.encode("GOOGLE_AUTH_" + System.currentTimeMillis()));
             user.setGoogleAuth(true);
-            user.setEmailVerified(true);
+            user.setEmailVerified(false);
             userRepository.save(user);
         }
 
@@ -192,41 +197,36 @@ public class AuthService {
     }
 
     public String verifyEmail(String token) {
-        System.out.println("Verifying token: " + token); // Debug log
+        System.out.println("Verifying token: " + token);
         VerificationToken verificationToken = verificationTokenRepository.findByToken(token)
                 .orElseThrow(() -> {
-                    System.out.println("Token not found: " + token); // Debug log
+                    System.out.println("Token not found: " + token);
                     return new RuntimeException("Invalid or unknown verification token");
                 });
 
-        System.out.println("Token expiry: " + verificationToken.getExpiryDate()); // Debug log
+        System.out.println("Token expiry: " + verificationToken.getExpiryDate());
         if (verificationToken.getExpiryDate().isBefore(LocalDateTime.now())) {
             verificationTokenRepository.delete(verificationToken);
-            System.out.println("Token expired: " + token); // Debug log
+            System.out.println("Token expired: " + token);
             throw new RuntimeException("Verification token has expired. Please request a new verification email.");
         }
 
         User user = verificationToken.getUser();
-        System.out.println("User email: " + user.getEmail() + ", verified: " + user.isEmailVerified()); // Debug log
-        if (user.isEmailVerified()) {
-            System.out.println("Email already verified for user: " + user.getEmail()); // Debug log
+        System.out.println("User email: " + user.getEmail() + ", verified: " + user.isEmailVerified());
+        if (user.isEmailVerified() || verificationToken.isVerified()) {
+            System.out.println("Email already verified for user: " + user.getEmail());
             throw new RuntimeException("Email has already been verified. Please log in.");
         }
 
         user.setEmailVerified(true);
+        verificationToken.setVerified(true);
         userRepository.save(user);
-        verificationTokenRepository.delete(verificationToken);
-        System.out.println("Email verified successfully for user: " + user.getEmail()); // Debug log
+        verificationTokenRepository.save(verificationToken);
+        System.out.println("Email verified successfully for user: " + user.getEmail());
 
-        // Generate JWT token for immediate authentication
         String jwtToken = jwtUtil.generateToken(user.getEmail());
-        System.out.println("Generated JWT token: " + jwtToken); // Debug log
+        System.out.println("Generated JWT token: " + jwtToken);
         return jwtToken;
-    }
-
-    private boolean isValidEmail(String email) {
-        String emailRegex = "^[A-Za-z0-9+_.-]+@(.+)$";
-        return email != null && email.matches(emailRegex);
     }
 
     public void resendVerificationEmail(String email) throws MessagingException {
@@ -237,6 +237,7 @@ public class AuthService {
             throw new RuntimeException("Email already verified");
         }
 
+        // Delete existing tokens for the user
         verificationTokenRepository.deleteByUser(user);
 
         String token = UUID.randomUUID().toString();
@@ -248,4 +249,11 @@ public class AuthService {
         verificationTokenRepository.save(verificationToken);
         emailService.sendVerificationEmail(user.getEmail(), token);
     }
+
+    private boolean isValidEmail(String email) {
+
+        String emailRegex = "^[A-Za-z0-9+_.-]+@(.+)$";
+        return email != null && email.matches(emailRegex);
+    }
+
 }

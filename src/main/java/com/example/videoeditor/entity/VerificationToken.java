@@ -11,11 +11,13 @@ public class VerificationToken {
 
     private String token;
 
-    @OneToOne
-    @JoinColumn(name = "user_id", nullable = false)
+    @OneToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "user_id")
     private User user;
 
     private LocalDateTime expiryDate;
+
+    private boolean verified; // New field to track usage
 
     public VerificationToken() {}
 
@@ -23,6 +25,7 @@ public class VerificationToken {
         this.token = token;
         this.user = user;
         this.expiryDate = expiryDate;
+        this.verified = false;
     }
 
     // Getters and Setters
@@ -56,5 +59,13 @@ public class VerificationToken {
 
     public void setExpiryDate(LocalDateTime expiryDate) {
         this.expiryDate = expiryDate;
+    }
+
+    public boolean isVerified() {
+        return verified;
+    }
+
+    public void setVerified(boolean verified) {
+        this.verified = verified;
     }
 }

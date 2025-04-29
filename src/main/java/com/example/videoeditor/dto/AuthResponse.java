@@ -1,13 +1,23 @@
 package com.example.videoeditor.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class AuthResponse {
+    @JsonProperty("token")
     private String token;
+
+    @JsonProperty("email")
     private String email;
+
+    @JsonProperty("name")
     private String name;
+
+    @JsonProperty("message")
     private String message;
+
+    @JsonProperty("isVerified")
     private boolean isVerified;
 
-    // Update constructor
     public AuthResponse(String token, String email, String name, String message, boolean isVerified) {
         this.token = token;
         this.email = email;
@@ -16,7 +26,31 @@ public class AuthResponse {
         this.isVerified = isVerified;
     }
 
-    // Add getters/setters for new fields
+    // Getters and setters
+    public String getToken() {
+        return token;
+    }
+
+    public void setToken(String token) {
+        this.token = token;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
     public String getMessage() {
         return message;
     }
