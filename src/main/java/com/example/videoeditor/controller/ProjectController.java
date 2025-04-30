@@ -9,7 +9,6 @@ import com.example.videoeditor.security.JwtUtil;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
@@ -25,6 +24,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/projects")
@@ -34,7 +34,6 @@ public class ProjectController {
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
 
-    @Autowired
     public ProjectController(
             VideoEditingService videoEditingService,
             ProjectRepository projectRepository,
@@ -355,12 +354,6 @@ public class ProjectController {
             String backgroundBorderColor = (String) request.get("backgroundBorderColor");
             Integer backgroundPadding = request.get("backgroundPadding") != null ? Integer.valueOf(request.get("backgroundPadding").toString()) : null;
             Integer backgroundBorderRadius = request.get("backgroundBorderRadius") != null ? Integer.valueOf(request.get("backgroundBorderRadius").toString()) : null;
-            String shadowColor = (String) request.get("shadowColor");
-            Integer shadowOffsetX = request.get("shadowOffsetX") != null ? Integer.valueOf(request.get("shadowOffsetX").toString()) : null;
-            Integer shadowOffsetY = request.get("shadowOffsetY") != null ? Integer.valueOf(request.get("shadowOffsetY").toString()) : null;
-            Double shadowBlurRadius = request.get("shadowBlurRadius") != null ? Double.valueOf(request.get("shadowBlurRadius").toString()) : null;
-            Double shadowSpread = request.get("shadowSpread") != null ? Double.valueOf(request.get("shadowSpread").toString()) : null;
-            Double shadowOpacity = request.get("shadowOpacity") != null ? Double.valueOf(request.get("shadowOpacity").toString()) : null;
 
             // Existing validation
             if (text == null || layer == null || timelineStartTime == null || timelineEndTime == null) {
@@ -386,20 +379,10 @@ public class ProjectController {
             if (backgroundBorderRadius != null && backgroundBorderRadius < 0) {
                 return ResponseEntity.badRequest().body("Background border radius must be non-negative");
             }
-            if (shadowBlurRadius != null && shadowBlurRadius < 0) {
-                return ResponseEntity.badRequest().body("Shadow blur radius must be non-negative");
-            }
-            if (shadowSpread != null && shadowSpread < 0) {
-                return ResponseEntity.badRequest().body("Shadow spread must be non-negative");
-            }
-            if (shadowOpacity != null && (shadowOpacity < 0 || shadowOpacity > 1)) {
-                return ResponseEntity.badRequest().body("Shadow opacity must be between 0 and 1");
-            }
 
             videoEditingService.addTextToTimeline(sessionId, text, layer, timelineStartTime, timelineEndTime,
                     fontFamily, scale, fontColor, backgroundColor, positionX, positionY, opacity, alignment,
                     backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundPadding,
-                    shadowColor, shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpread, shadowOpacity,
                     backgroundBorderRadius);
 
             return ResponseEntity.ok().build();
@@ -441,12 +424,6 @@ public class ProjectController {
             String backgroundBorderColor = (String) request.get("backgroundBorderColor");
             Integer backgroundPadding = request.containsKey("backgroundPadding") ? Integer.valueOf(request.get("backgroundPadding").toString()) : null;
             Integer backgroundBorderRadius = request.containsKey("backgroundBorderRadius") ? Integer.valueOf(request.get("backgroundBorderRadius").toString()) : null;
-            String shadowColor = (String) request.get("shadowColor");
-            Integer shadowOffsetX = request.containsKey("shadowOffsetX") ? Integer.valueOf(request.get("shadowOffsetX").toString()) : null;
-            Integer shadowOffsetY = request.containsKey("shadowOffsetY") ? Integer.valueOf(request.get("shadowOffsetY").toString()) : null;
-            Double shadowBlurRadius = request.containsKey("shadowBlurRadius") ? Double.valueOf(request.get("shadowBlurRadius").toString()) : null;
-            Double shadowSpread = request.containsKey("shadowSpread") ? Double.valueOf(request.get("shadowSpread").toString()) : null;
-            Double shadowOpacity = request.containsKey("shadowOpacity") ? Double.valueOf(request.get("shadowOpacity").toString()) : null;
 
             // Parse keyframes
             Map<String, List<Keyframe>> parsedKeyframes = null;
@@ -492,20 +469,10 @@ public class ProjectController {
             if (backgroundBorderRadius != null && backgroundBorderRadius < 0) {
                 return ResponseEntity.badRequest().body("Background border radius must be non-negative");
             }
-            if (shadowBlurRadius != null && shadowBlurRadius < 0) {
-                return ResponseEntity.badRequest().body("Shadow blur radius must be non-negative");
-            }
-            if (shadowSpread != null && shadowSpread < 0) {
-                return ResponseEntity.badRequest().body("Shadow spread must be non-negative");
-            }
-            if (shadowOpacity != null && (shadowOpacity < 0 || shadowOpacity > 1)) {
-                return ResponseEntity.badRequest().body("Shadow opacity must be between 0 and 1");
-            }
 
             videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, scale,
                     fontColor, backgroundColor, positionX, positionY, opacity, timelineStartTime, timelineEndTime, layer, alignment,
                     backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundPadding,
-                    shadowColor, shadowOffsetX, shadowOffsetY, shadowBlurRadius, shadowSpread, shadowOpacity,
                     backgroundBorderRadius, parsedKeyframes);
 
             return ResponseEntity.ok().build();
@@ -757,10 +724,7 @@ public class ProjectController {
             Double cropR = request.containsKey("cropR") ? Double.valueOf(request.get("cropR").toString()) : null;
             Double cropT = request.containsKey("cropT") ? Double.valueOf(request.get("cropT").toString()) : null;
             Double cropB = request.containsKey("cropB") ? Double.valueOf(request.get("cropB").toString()) : null;
-            @SuppressWarnings("unchecked")
-            Map<String, String> filters = request.containsKey("filters") ? (Map<String, String>) request.get("filters") : null;
-            @SuppressWarnings("unchecked")
-            List<String> filtersToRemove = request.containsKey("filtersToRemove") ? (List<String>) request.get("filtersToRemove") : null;
+
             @SuppressWarnings("unchecked")
             Map<String, List<Map<String, Object>>> keyframes = request.containsKey("keyframes") ? (Map<String, List<Map<String, Object>>>) request.get("keyframes") : null;
 
@@ -820,7 +784,7 @@ public class ProjectController {
 
             videoEditingService.updateImageSegment(
                     sessionId, segmentId, positionX, positionY, scale, opacity, layer,
-                    customWidth, customHeight, maintainAspectRatio, filters, filtersToRemove,
+                    customWidth, customHeight, maintainAspectRatio,
                     timelineStartTime, timelineEndTime, cropL, cropR, cropT, cropB, parsedKeyframes);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -1073,16 +1037,15 @@ public class ProjectController {
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
             @RequestParam String sessionId,
-            @RequestParam String filterId,
             @RequestParam String segmentId) {
         try {
             User user = getUserFromToken(token);
 
-            if (filterId == null || segmentId == null) {
+            if (segmentId == null) {
                 return ResponseEntity.badRequest().body("Missing required parameters: filterId, segmentId");
             }
 
-            videoEditingService.removeFilter(sessionId, segmentId, filterId);
+            videoEditingService.removeFilter(sessionId, segmentId);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -1101,28 +1064,35 @@ public class ProjectController {
 
             String type = (String) request.get("type");
             Double duration = request.get("duration") != null ? Double.valueOf(request.get("duration").toString()) : null;
-            String fromSegmentId = (String) request.get("fromSegmentId"); // Can be null
-            String toSegmentId = (String) request.get("toSegmentId");
+            String segmentId = (String) request.get("segmentId");
+            Boolean start = request.get("start") != null ? Boolean.valueOf(request.get("start").toString()) : null;
+            Boolean end = request.get("end") != null ? Boolean.valueOf(request.get("end").toString()) : null;
             Integer layer = request.get("layer") != null ? Integer.valueOf(request.get("layer").toString()) : null;
             @SuppressWarnings("unchecked")
             Map<String, String> parameters = request.containsKey("parameters") ? (Map<String, String>) request.get("parameters") : null;
 
-            // Validate required parameters, allowing fromSegmentId to be null
-            if (type == null || duration == null || toSegmentId == null || layer == null) {
-                return ResponseEntity.badRequest().body("Missing required parameters: type, duration, toSegmentId, layer");
+            // Validate required parameters
+            if (type == null || duration == null || segmentId == null || start == null || end == null || layer == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: type, duration, segmentId, start, end, layer");
             }
             if (duration <= 0) {
                 return ResponseEntity.badRequest().body("Duration must be positive");
             }
+            if (!start && !end) {
+                return ResponseEntity.badRequest().body("Transition must be applied at start, end, or both");
+            }
 
-            videoEditingService.addTransition(sessionId, type, duration, fromSegmentId, toSegmentId, layer, parameters);
+            videoEditingService.addTransition(sessionId, type, duration, segmentId, start, end, layer, parameters);
 
             // Retrieve the newly added transition
             TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
             Transition addedTransition = timelineState.getTransitions().stream()
-                    .filter(t -> t.getToSegmentId().equals(toSegmentId) &&
-                            (fromSegmentId == null ? t.getFromSegmentId() == null : t.getFromSegmentId() != null && t.getFromSegmentId().equals(fromSegmentId)) &&
-                            t.getLayer() == layer)
+                    .filter(t -> t.getSegmentId().equals(segmentId) &&
+                            t.isStart() == start &&
+                            t.isEnd() == end &&
+                            t.getLayer() == layer &&
+                            t.getType().equals(type) &&
+                            Math.abs(t.getDuration() - duration) < 0.001)
                     .findFirst()
                     .orElseThrow(() -> new RuntimeException("Failed to find added transition"));
 
@@ -1130,10 +1100,12 @@ public class ProjectController {
                     "transitionId", addedTransition.getId(),
                     "type", addedTransition.getType(),
                     "duration", addedTransition.getDuration(),
-                    "fromSegmentId", addedTransition.getFromSegmentId(),
-                    "toSegmentId", addedTransition.getToSegmentId(),
+                    "segmentId", addedTransition.getSegmentId(),
+                    "start", addedTransition.isStart(),
+                    "end", addedTransition.isEnd(),
                     "layer", addedTransition.getLayer(),
-                    "timelineStartTime", addedTransition.getTimelineStartTime()
+                    "timelineStartTime", addedTransition.getTimelineStartTime(),
+                    "parameters", addedTransition.getParameters()
             ));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -1154,21 +1126,38 @@ public class ProjectController {
             String transitionId = (String) request.get("transitionId");
             String type = (String) request.get("type");
             Double duration = request.containsKey("duration") ? Double.valueOf(request.get("duration").toString()) : null;
-            String fromSegmentId = (String) request.get("fromSegmentId");
-            String toSegmentId = (String) request.get("toSegmentId");
+            String segmentId = (String) request.get("segmentId");
+            Boolean start = request.containsKey("start") ? Boolean.valueOf(request.get("start").toString()) : null;
+            Boolean end = request.containsKey("end") ? Boolean.valueOf(request.get("end").toString()) : null;
             Integer layer = request.containsKey("layer") ? Integer.valueOf(request.get("layer").toString()) : null;
             @SuppressWarnings("unchecked")
             Map<String, String> parameters = request.containsKey("parameters") ? (Map<String, String>) request.get("parameters") : null;
 
+            // Validate required parameters
             if (transitionId == null) {
                 return ResponseEntity.badRequest().body("Missing required parameter: transitionId");
             }
             if (duration != null && duration <= 0) {
                 return ResponseEntity.badRequest().body("Duration must be positive");
             }
+            if (start != null && end != null && !start && !end) {
+                return ResponseEntity.badRequest().body("Transition must be applied at start, end, or both");
+            }
 
-            videoEditingService.updateTransition(sessionId, transitionId, type, duration, fromSegmentId, toSegmentId, layer, parameters);
-            return ResponseEntity.ok().build();
+            Transition updatedTransition = videoEditingService.updateTransition(
+                    sessionId, transitionId, type, duration, segmentId, start, end, layer, parameters);
+
+            return ResponseEntity.ok(Map.of(
+                    "transitionId", updatedTransition.getId(),
+                    "type", updatedTransition.getType(),
+                    "duration", updatedTransition.getDuration(),
+                    "segmentId", updatedTransition.getSegmentId(),
+                    "start", updatedTransition.isStart(),
+                    "end", updatedTransition.isEnd(),
+                    "layer", updatedTransition.getLayer(),
+                    "timelineStartTime", updatedTransition.getTimelineStartTime(),
+                    "parameters", updatedTransition.getParameters()
+            ));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error updating transition: " + e.getMessage());
@@ -1185,7 +1174,7 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
 
-            if (transitionId == null) {
+            if (transitionId == null || transitionId.isEmpty()) {
                 return ResponseEntity.badRequest().body("Missing required parameter: transitionId");
             }
 
@@ -1197,7 +1186,6 @@ public class ProjectController {
         }
     }
 
-    // NEW: Endpoint to get all transitions
     @GetMapping("/{projectId}/transitions")
     public ResponseEntity<List<Transition>> getTransitions(
             @RequestHeader("Authorization") String token,

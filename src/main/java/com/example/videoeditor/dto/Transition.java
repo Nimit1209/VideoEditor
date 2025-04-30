@@ -9,14 +9,16 @@ import java.util.UUID;
 @Data
 public class Transition {
     private String id = UUID.randomUUID().toString();
-    private String type; // e.g., "fade", "dissolve", "wipe"
+    private String type; // e.g., "fade", "dissolve", "wipe", "slide", "zoom", "rotate"
     private double duration; // in seconds
-    private String fromSegmentId; // ID of the first segment
-    private String toSegmentId; // ID of the second segment
+    private String segmentId; // ID of the segment to which the transition applies
+    private boolean start; // true if transition applies at the segment's start
+    private boolean end; // true if transition applies at the segment's end
     private int layer; // Layer where the transition occurs
     private double timelineStartTime; // When the transition starts on the timeline
     private Map<String, String> parameters = new HashMap<>(); // Additional settings, e.g., {"direction": "left"}
 
+    // Getters and Setters
     public String getId() {
         return id;
     }
@@ -41,20 +43,28 @@ public class Transition {
         this.duration = duration;
     }
 
-    public String getFromSegmentId() {
-        return fromSegmentId;
+    public String getSegmentId() {
+        return segmentId;
     }
 
-    public void setFromSegmentId(String fromSegmentId) {
-        this.fromSegmentId = fromSegmentId;
+    public void setSegmentId(String segmentId) {
+        this.segmentId = segmentId;
     }
 
-    public String getToSegmentId() {
-        return toSegmentId;
+    public boolean isStart() {
+        return start;
     }
 
-    public void setToSegmentId(String toSegmentId) {
-        this.toSegmentId = toSegmentId;
+    public void setStart(boolean start) {
+        this.start = start;
+    }
+
+    public boolean isEnd() {
+        return end;
+    }
+
+    public void setEnd(boolean end) {
+        this.end = end;
     }
 
     public int getLayer() {
