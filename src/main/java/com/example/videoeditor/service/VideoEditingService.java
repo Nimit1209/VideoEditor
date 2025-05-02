@@ -1,18 +1,16 @@
 package com.example.videoeditor.service;
 
+import com.example.videoeditor.developer.entity.GlobalElement;
+import com.example.videoeditor.developer.repository.GlobalElementRepository;
 import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.Element;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
-import com.example.videoeditor.repository.EditedVideoRepository;
-import com.example.videoeditor.repository.ElementRepository;
 import com.example.videoeditor.repository.ProjectRepository;
-import com.example.videoeditor.repository.UserRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
-import org.apache.commons.io.FilenameUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -26,40 +24,32 @@ import java.awt.font.TextLayout;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.text.DecimalFormat;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
 public class VideoEditingService {
     private final ProjectRepository projectRepository;
-    private final EditedVideoRepository editedVideoRepository;
-    private final UserRepository userRepository;
     private final ObjectMapper objectMapper;
     private final Map<String, EditSession> activeSessions;
-    private final ElementRepository elementRepository;
+    private final GlobalElementRepository globalElementRepository;
 
     private final String ffmpegPath = "/usr/local/bin/ffmpeg";
     private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
-    private final String ELEMENTS_DIR = "/Users/nimitpatel/Desktop/VideoEditor 2/elements/";
-    public VideoEditingService(
-            ProjectRepository projectRepository,
-            EditedVideoRepository editedVideoRepository, UserRepository userRepository,
-            ObjectMapper objectMapper, ElementRepository elementRepository
-    ) {
+    private String globalElementsDirectory= "elements/";
+
+
+    public VideoEditingService(ProjectRepository projectRepository, ObjectMapper objectMapper,
+                               Map<String, EditSession> activeSessions,
+                               GlobalElementRepository globalElementRepository) {
         this.projectRepository = projectRepository;
-        this.editedVideoRepository = editedVideoRepository;
-        this.userRepository = userRepository;
         this.objectMapper = objectMapper;
-        this.elementRepository = elementRepository;
-        this.activeSessions = new ConcurrentHashMap<>();
+        this.activeSessions = activeSessions;
+        this.globalElementRepository = globalElementRepository;
     }
 
     @Data
@@ -1241,18 +1231,30 @@ public class VideoEditingService {
         String imagePath;
 
         if (isElement) {
-            // Handle element
-            Element element = elementRepository.findByFileNameAndUser(imageFileName, user)
-                    .orElseThrow(() -> new RuntimeException("Element not found with filename: " + imageFileName));
-            imagePath = element.getFilePath(); // e.g., "elements/filename.png"
+            // Handle global element
+            GlobalElement globalElement = globalElementRepository.findByFileName(imageFileName)
+                    .orElseThrow(() -> new RuntimeException("Global element not found with filename: " + imageFileName));
 
-            // Optionally, associate the element with the project (if not already)
+            // Parse globalElement_json to get imagePath
+            Map<String, String> jsonData = objectMapper.readValue(
+                    globalElement.getGlobalElementJson(),
+                    new TypeReference<Map<String, String>>() {}
+            );
+            String imagePathFromJson = jsonData.get("imagePath"); // e.g., elements/filename.png
+
+            // Construct absolute path for file access
+            imagePath = globalElementsDirectory + imageFileName; // e.g., /Users/nimitpatel/Desktop/VideoEditor 2/elements/filename.png
+            File imageFile = new File(imagePath);
+            if (!imageFile.exists()) {
+                throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
+            }
+
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
             if (!project.getUser().getId().equals(user.getId())) {
                 throw new RuntimeException("Unauthorized to modify this project");
             }
-            addElement(project, imagePath, imageFileName); // Store in element_json
+            addElement(project, imagePathFromJson, imageFileName); // Store in element_json
         } else {
             // Handle project image
             Project project = projectRepository.findById(projectId)
@@ -3707,55 +3709,12 @@ public class VideoEditingService {
         return dto;
     }
 
-    // Updated method for multiple element uploads
-    public List<ElementDto> uploadElements(MultipartFile[] files, String title, User user) throws IOException {
-        List<ElementDto> uploadedElements = new ArrayList<>();
-        for (MultipartFile file : files) {
-            // Validate file type (only images allowed)
-            String contentType = file.getContentType();
-            if (contentType == null || !contentType.startsWith("image/")) {
-                throw new IllegalArgumentException("Only image files are allowed: " + file.getOriginalFilename());
-            }
-
-            // Sanitize filename to prevent path traversal
-            String filename = FilenameUtils.getName(file.getOriginalFilename());
-            String filePath = ELEMENTS_DIR + filename;
-
-            // Check for duplicate filenames (optional: append timestamp if needed)
-            File destFile = new File(filePath);
-            if (destFile.exists()) {
-                String baseName = FilenameUtils.getBaseName(filename);
-                String extension = FilenameUtils.getExtension(filename);
-                filename = baseName + "_" + System.currentTimeMillis() + "." + extension;
-                filePath = ELEMENTS_DIR + filename;
-            }
-
-            file.transferTo(Paths.get(filePath));
-
-            Element element = new Element();
-            element.setTitle(title != null ? title : filename);
-            element.setFilePath("elements/" + filename); // Store relative path
-            element.setFileName(filename);
-            element.setUser(user);
-            Element savedElement = elementRepository.save(element);
-            uploadedElements.add(toElementDto(savedElement));
-        }
-        return uploadedElements;
-    }
-
-    // Updated method to retrieve elements by user
-    public List<ElementDto> getElementsByUser(String email) {
-        return elementRepository.findByUserEmail(email).stream()
-                .map(this::toElementDto)
-                .collect(Collectors.toList());
-    }
-
     // Add element to project (store in element_json)
-    public void addElement(Project project, String elementPath, String elementFileName) throws JsonProcessingException {
+    public void addElement(Project project, String imagePath, String imageFileName) throws JsonProcessingException {
         List<Map<String, String>> elements = getElements(project);
         Map<String, String> elementData = new HashMap<>();
-        elementData.put("elementPath", elementPath); // e.g., "elements/emoji1.png"
-        elementData.put("elementFileName", elementFileName);
+        elementData.put("imagePath", imagePath);
+        elementData.put("imageFileName", imageFileName);
         elements.add(elementData);
         project.setElementJson(objectMapper.writeValueAsString(elements));
     }

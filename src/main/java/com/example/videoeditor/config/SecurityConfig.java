@@ -61,6 +61,8 @@ public class SecurityConfig implements WebMvcConfigurer {
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/auth/**").permitAll()
+                        .requestMatchers("/api/global-elements", "/api/global-elements/**").permitAll() // Public access
+                        .requestMatchers("/developer/**").authenticated() // Requires JWT, role checked in JwtFilter
                         .requestMatchers("/videos/upload", "/videos/my-videos", "/videos/merge", "/videos/edited-videos", "/videos/trim", "/videos/split", "/videos/duration/**").authenticated()
                         .requestMatchers("/projects/{projectId}/images/{filename}").permitAll()
                         .requestMatchers("/projects/{projectId}/audio/{filename}").permitAll()

@@ -1447,34 +1447,4 @@ public class ProjectController {
         return "application/octet-stream"; // Default fallback
     }
 
-
-    @PostMapping("/elements/upload")
-    public ResponseEntity<List<ElementDto>> uploadElements(
-            @RequestParam("files") MultipartFile[] files,
-            @RequestParam(value = "title", required = false) String title,
-            Authentication authentication
-    ) throws IOException {
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
-        }
-
-        String email = (String) authentication.getPrincipal();
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found with email: " + email));
-
-        List<ElementDto> elements = videoEditingService.uploadElements(files, title, user);
-        return ResponseEntity.ok(elements);
-    }
-
-    @GetMapping("/elements")
-    public ResponseEntity<List<ElementDto>> getElements(Authentication authentication) {
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
-        }
-
-        String email = (String) authentication.getPrincipal();
-        List<ElementDto> elements = videoEditingService.getElementsByUser(email);
-        return ResponseEntity.ok(elements);
-    }
-
 }

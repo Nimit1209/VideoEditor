@@ -1,5 +1,7 @@
 package com.example.videoeditor.service;
 
+import com.example.videoeditor.developer.entity.Developer;
+import com.example.videoeditor.developer.repository.DeveloperRepository;
 import com.example.videoeditor.dto.AuthRequest;
 import com.example.videoeditor.dto.AuthResponse;
 import com.example.videoeditor.entity.User;
@@ -40,17 +42,19 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     private final EmailService emailService;
+    private final DeveloperRepository developerRepository;
 
     @Value("${spring.security.oauth2.client.registration.google.client-id}")
     private String googleClientId;
 
     public AuthService(UserRepository userRepository, VerificationTokenRepository verificationTokenRepository,
-                       PasswordEncoder passwordEncoder, JwtUtil jwtUtil, EmailService emailService) {
+                       PasswordEncoder passwordEncoder, JwtUtil jwtUtil, EmailService emailService, DeveloperRepository developerRepository) {
         this.userRepository = userRepository;
         this.verificationTokenRepository = verificationTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtil = jwtUtil;
         this.emailService = emailService;
+        this.developerRepository = developerRepository;
     }
 
     @Transactional
@@ -367,5 +371,45 @@ public class AuthService {
             System.out.println("Email verification failed for: " + email + ", error: " + e.getMessage());
             return false;
         }
+    }
+
+    @Transactional
+    public AuthResponse developerLogin(AuthRequest request) {
+        Developer developer = developerRepository.findByUsername(request.getEmail())
+                .orElseThrow(() -> new RuntimeException("Invalid developer credentials"));
+
+        if (!developer.isActive()) {
+            throw new RuntimeException("Developer account is disabled");
+        }
+
+        if (!passwordEncoder.matches(request.getPassword(), developer.getPassword())) {
+            throw new RuntimeException("Invalid developer credentials");
+        }
+
+        String token = jwtUtil.generateToken(developer.getUsername(), "DEVELOPER");
+        return new AuthResponse(
+                token,
+                developer.getUsername(),
+                null,
+                "Developer login successful",
+                true
+        );
+    }
+
+    @Transactional
+    public Developer createDeveloper(String username, String password) {
+        if (developerRepository.findByUsername(username).isPresent()) {
+            throw new RuntimeException("Developer username already exists");
+        }
+
+        if (!isPasswordValid(password)) {
+            throw new RuntimeException("Password must be at least 8 characters with at least one letter and one number");
+        }
+
+        Developer developer = new Developer();
+        developer.setUsername(username);
+        developer.setPassword(passwordEncoder.encode(password));
+        developer.setActive(true);
+        return developerRepository.save(developer);
     }
 }

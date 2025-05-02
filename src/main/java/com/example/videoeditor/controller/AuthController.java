@@ -81,6 +81,17 @@ public class AuthController {
             ));
         }
     }
+
+    @PostMapping("/developer-login")
+    public ResponseEntity<AuthResponse> developerLogin(@RequestBody AuthRequest request) {
+        try {
+            AuthResponse response = authService.developerLogin(request);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AuthResponse(null, request.getEmail(), null, e.getMessage(), false));
+        }
+    }
 }
 
 class GoogleAuthRequest {
