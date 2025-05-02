@@ -348,12 +348,18 @@ public class ProjectController {
             Double opacity = request.get("opacity") != null ? Double.valueOf(request.get("opacity").toString()) : null;
             String alignment = (String) request.get("alignment");
 
-            // New parameters
+            // New background parameters
             Double backgroundOpacity = request.get("backgroundOpacity") != null ? Double.valueOf(request.get("backgroundOpacity").toString()) : null;
             Integer backgroundBorderWidth = request.get("backgroundBorderWidth") != null ? Integer.valueOf(request.get("backgroundBorderWidth").toString()) : null;
             String backgroundBorderColor = (String) request.get("backgroundBorderColor");
-            Integer backgroundPadding = request.get("backgroundPadding") != null ? Integer.valueOf(request.get("backgroundPadding").toString()) : null;
+            Integer backgroundH = request.get("backgroundH") != null ? Integer.valueOf(request.get("backgroundH").toString()) : null;
+            Integer backgroundW = request.get("backgroundW") != null ? Integer.valueOf(request.get("backgroundW").toString()) : null;
             Integer backgroundBorderRadius = request.get("backgroundBorderRadius") != null ? Integer.valueOf(request.get("backgroundBorderRadius").toString()) : null;
+
+            // New text border parameters
+            String textBorderColor = (String) request.get("textBorderColor");
+            Integer textBorderWidth = request.get("textBorderWidth") != null ? Integer.valueOf(request.get("textBorderWidth").toString()) : null;
+            Double textBorderOpacity = request.get("textBorderOpacity") != null ? Double.valueOf(request.get("textBorderOpacity").toString()) : null;
 
             // Existing validation
             if (text == null || layer == null || timelineStartTime == null || timelineEndTime == null) {
@@ -366,26 +372,76 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Alignment must be 'left', 'right', or 'center'");
             }
 
-            // New validation
+            // New background validation
             if (backgroundOpacity != null && (backgroundOpacity < 0 || backgroundOpacity > 1)) {
                 return ResponseEntity.badRequest().body("Background opacity must be between 0 and 1");
             }
             if (backgroundBorderWidth != null && backgroundBorderWidth < 0) {
                 return ResponseEntity.badRequest().body("Background border width must be non-negative");
             }
-            if (backgroundPadding != null && backgroundPadding < 0) {
-                return ResponseEntity.badRequest().body("Background padding must be non-negative");
+            if (backgroundH != null && backgroundH < 0) {
+                return ResponseEntity.badRequest().body("Background height must be non-negative");
+            }
+            if (backgroundW != null && backgroundW < 0) {
+                return ResponseEntity.badRequest().body("Background width must be non-negative");
             }
             if (backgroundBorderRadius != null && backgroundBorderRadius < 0) {
                 return ResponseEntity.badRequest().body("Background border radius must be non-negative");
             }
 
-            videoEditingService.addTextToTimeline(sessionId, text, layer, timelineStartTime, timelineEndTime,
-                    fontFamily, scale, fontColor, backgroundColor, positionX, positionY, opacity, alignment,
-                    backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundPadding,
-                    backgroundBorderRadius);
+            // New text border validation
+            if (textBorderWidth != null && textBorderWidth < 0) {
+                return ResponseEntity.badRequest().body("Text border width must be non-negative");
+            }
+            if (textBorderOpacity != null && (textBorderOpacity < 0 || textBorderOpacity > 1)) {
+                return ResponseEntity.badRequest().body("Text border opacity must be between 0 and 1");
+            }
 
-            return ResponseEntity.ok().build();
+            // Add text to timeline
+            videoEditingService.addTextToTimeline(
+                    sessionId, text, layer, timelineStartTime, timelineEndTime,
+                    fontFamily, scale, fontColor, backgroundColor, positionX, positionY, opacity, alignment,
+                    backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundH,
+                    backgroundW, backgroundBorderRadius,
+                    textBorderColor, textBorderWidth, textBorderOpacity);
+
+            // Retrieve the newly added text segment from TimelineState
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            TextSegment addedTextSegment = timelineState.getTextSegments().stream()
+                    .filter(t -> t.getText().equals(text) &&
+                            Math.abs(t.getTimelineStartTime() - timelineStartTime) < 0.001 &&
+                            Math.abs(t.getTimelineEndTime() - timelineEndTime) < 0.001 &&
+                            t.getLayer() == layer)
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Failed to find added text segment"));
+
+            // Prepare response
+            Map<String, Object> response = new HashMap<>();
+            response.put("textSegmentId", addedTextSegment.getId());
+            response.put("text", addedTextSegment.getText());
+            response.put("layer", addedTextSegment.getLayer());
+            response.put("timelineStartTime", addedTextSegment.getTimelineStartTime());
+            response.put("timelineEndTime", addedTextSegment.getTimelineEndTime());
+            response.put("fontFamily", addedTextSegment.getFontFamily());
+            response.put("scale", addedTextSegment.getScale());
+            response.put("fontColor", addedTextSegment.getFontColor());
+            response.put("backgroundColor", addedTextSegment.getBackgroundColor());
+            response.put("positionX", addedTextSegment.getPositionX());
+            response.put("positionY", addedTextSegment.getPositionY());
+            response.put("opacity", addedTextSegment.getOpacity());
+            response.put("alignment", addedTextSegment.getAlignment());
+            response.put("backgroundOpacity", addedTextSegment.getBackgroundOpacity());
+            response.put("backgroundBorderWidth", addedTextSegment.getBackgroundBorderWidth());
+            response.put("backgroundBorderColor", addedTextSegment.getBackgroundBorderColor());
+            response.put("backgroundH", addedTextSegment.getBackgroundH());
+            response.put("backgroundW", addedTextSegment.getBackgroundW());
+            response.put("backgroundBorderRadius", addedTextSegment.getBackgroundBorderRadius());
+            response.put("textBorderColor", addedTextSegment.getTextBorderColor());
+            response.put("textBorderWidth", addedTextSegment.getTextBorderWidth());
+            response.put("textBorderOpacity", addedTextSegment.getTextBorderOpacity());
+            response.put("keyframes", addedTextSegment.getKeyframes() != null ? addedTextSegment.getKeyframes() : new HashMap<>());
+
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding text to timeline: " + e.getMessage());
@@ -418,12 +474,18 @@ public class ProjectController {
             @SuppressWarnings("unchecked")
             Map<String, List<Map<String, Object>>> keyframes = request.containsKey("keyframes") ? (Map<String, List<Map<String, Object>>>) request.get("keyframes") : null;
 
-            // New parameters
+            // New background parameters
             Double backgroundOpacity = request.containsKey("backgroundOpacity") ? Double.valueOf(request.get("backgroundOpacity").toString()) : null;
             Integer backgroundBorderWidth = request.containsKey("backgroundBorderWidth") ? Integer.valueOf(request.get("backgroundBorderWidth").toString()) : null;
             String backgroundBorderColor = (String) request.get("backgroundBorderColor");
-            Integer backgroundPadding = request.containsKey("backgroundPadding") ? Integer.valueOf(request.get("backgroundPadding").toString()) : null;
+            Integer backgroundH = request.containsKey("backgroundH") ? Integer.valueOf(request.get("backgroundH").toString()) : null;
+            Integer backgroundW = request.containsKey("backgroundW") ? Integer.valueOf(request.get("backgroundW").toString()) : null;
             Integer backgroundBorderRadius = request.containsKey("backgroundBorderRadius") ? Integer.valueOf(request.get("backgroundBorderRadius").toString()) : null;
+
+            // New text border parameters
+            String textBorderColor = (String) request.get("textBorderColor");
+            Integer textBorderWidth = request.containsKey("textBorderWidth") ? Integer.valueOf(request.get("textBorderWidth").toString()) : null;
+            Double textBorderOpacity = request.containsKey("textBorderOpacity") ? Double.valueOf(request.get("textBorderOpacity").toString()) : null;
 
             // Parse keyframes
             Map<String, List<Keyframe>> parsedKeyframes = null;
@@ -456,24 +518,38 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Alignment must be 'left', 'right', or 'center'");
             }
 
-            // New validation
+            // New background validation
             if (backgroundOpacity != null && (backgroundOpacity < 0 || backgroundOpacity > 1)) {
                 return ResponseEntity.badRequest().body("Background opacity must be between 0 and 1");
             }
             if (backgroundBorderWidth != null && backgroundBorderWidth < 0) {
                 return ResponseEntity.badRequest().body("Background border width must be non-negative");
             }
-            if (backgroundPadding != null && backgroundPadding < 0) {
-                return ResponseEntity.badRequest().body("Background padding must be non-negative");
+            if (backgroundH != null && backgroundH < 0) {
+                return ResponseEntity.badRequest().body("Background height must be non-negative");
+            }
+            if (backgroundW != null && backgroundW < 0) {
+                return ResponseEntity.badRequest().body("Background width must be non-negative");
             }
             if (backgroundBorderRadius != null && backgroundBorderRadius < 0) {
                 return ResponseEntity.badRequest().body("Background border radius must be non-negative");
             }
 
-            videoEditingService.updateTextSegment(sessionId, segmentId, text, fontFamily, scale,
+            // New text border validation
+            if (textBorderWidth != null && textBorderWidth < 0) {
+                return ResponseEntity.badRequest().body("Text border width must be non-negative");
+            }
+            if (textBorderOpacity != null && (textBorderOpacity < 0 || textBorderOpacity > 1)) {
+                return ResponseEntity.badRequest().body("Text border opacity must be between 0 and 1");
+            }
+
+            videoEditingService.updateTextSegment(
+                    sessionId, segmentId, text, fontFamily, scale,
                     fontColor, backgroundColor, positionX, positionY, opacity, timelineStartTime, timelineEndTime, layer, alignment,
-                    backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundPadding,
-                    backgroundBorderRadius, parsedKeyframes);
+                    backgroundOpacity, backgroundBorderWidth, backgroundBorderColor, backgroundH,
+                    backgroundW, backgroundBorderRadius,
+                    textBorderColor, textBorderWidth, textBorderOpacity,
+                    parsedKeyframes);
 
             return ResponseEntity.ok().build();
         } catch (Exception e) {
@@ -520,7 +596,9 @@ public class ProjectController {
             Double timelineEndTime = request.get("timelineEndTime") != null ?
                     ((Number) request.get("timelineEndTime")).doubleValue() : null;
             String audioFileName = (String) request.get("audioFileName");
+            Double volume = request.get("volume") != null ? ((Number) request.get("volume")).doubleValue() : 1.0;
 
+            // Validate parameters
             if (layer >= 0) {
                 return ResponseEntity.badRequest().body("Audio layer must be negative");
             }
@@ -534,9 +612,31 @@ public class ProjectController {
                 return ResponseEntity.badRequest().body("Audio filename is required");
             }
 
+            // Add audio to timeline
             videoEditingService.addAudioToTimelineFromProject(
                     user, sessionId, projectId, layer, startTime, endTime, timelineStartTime, timelineEndTime, audioFileName);
-            return ResponseEntity.ok().build();
+
+            // Retrieve the newly added audio segment from TimelineState
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            AudioSegment addedAudioSegment = timelineState.getAudioSegments().stream()
+                    .filter(a -> a.getAudioPath().endsWith(audioFileName) &&
+                            Math.abs(a.getTimelineStartTime() - timelineStartTime) < 0.001 &&
+                            (endTime == null || Math.abs(a.getEndTime() - endTime) < 0.001))
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Failed to find added audio segment"));
+
+            // Prepare response
+            Map<String, Object> response = new HashMap<>();
+            response.put("audioSegmentId", addedAudioSegment.getId());
+            response.put("layer", addedAudioSegment.getLayer());
+            response.put("timelineStartTime", addedAudioSegment.getTimelineStartTime());
+            response.put("timelineEndTime", addedAudioSegment.getTimelineEndTime());
+            response.put("startTime", addedAudioSegment.getStartTime());
+            response.put("endTime", addedAudioSegment.getEndTime());
+            response.put("volume", volume);
+            response.put("keyframes", addedAudioSegment.getKeyframes() != null ? addedAudioSegment.getKeyframes() : new HashMap<>());
+
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding audio to timeline: " + e.getMessage());
@@ -832,7 +932,7 @@ public class ProjectController {
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
             // Check if the file is in the elements directory first (global access)
-            String elementsDirectory = "/Users/nimitpatel/Desktop/VideoEditor 2/elements";
+            String elementsDirectory = "/Users/nimitpatel/Desktop/VideoEditor 2/elements/";
             Path elementsPath = Paths.get(elementsDirectory).resolve(filename).normalize();
             Resource resource = new UrlResource(elementsPath.toUri());
 

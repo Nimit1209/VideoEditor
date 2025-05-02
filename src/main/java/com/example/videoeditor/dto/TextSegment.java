@@ -24,8 +24,14 @@ public class TextSegment implements Segment {
     private Double backgroundOpacity = 1.0; // Opacity of background (0.0 to 1.0)
     private Integer backgroundBorderWidth = 0; // Border thickness in pixels
     private String backgroundBorderColor = "transparent"; // Border color
-    private Integer backgroundPadding = 10; // Padding in pixels
-    private Integer backgroundBorderRadius = 0; // New field for border radius in pixels
+    private Integer backgroundH = 0; // Background height in pixels (replaced backgroundPadding)
+    private Integer backgroundW = 0; // Background width in pixels (replaced backgroundPadding)
+    private Integer backgroundBorderRadius = 0; // Border radius in pixels
+
+    // Text border properties
+    private String textBorderColor = "transparent"; // Text border (stroke) color
+    private Integer textBorderWidth = 0; // Text border (stroke) width in pixels
+    private Double textBorderOpacity = 1.0; // Opacity of text border (0.0 to 1.0)
 
     // Enhanced shadow properties
     private String shadowColor = "transparent"; // Shadow color
@@ -61,12 +67,20 @@ public class TextSegment implements Segment {
         this.backgroundBorderWidth = backgroundBorderWidth != null ? backgroundBorderWidth : 0;
     }
 
-    // Validate background padding
-    public void setBackgroundPadding(Integer backgroundPadding) {
-        if (backgroundPadding != null && backgroundPadding < 0) {
-            throw new IllegalArgumentException("Background padding must be non-negative");
+    // Validate background height
+    public void setBackgroundH(Integer backgroundH) {
+        if (backgroundH != null && backgroundH < 0) {
+            throw new IllegalArgumentException("Background height must be non-negative");
         }
-        this.backgroundPadding = backgroundPadding != null ? backgroundPadding : 10;
+        this.backgroundH = backgroundH != null ? backgroundH : 0;
+    }
+
+    // Validate background width
+    public void setBackgroundW(Integer backgroundW) {
+        if (backgroundW != null && backgroundW < 0) {
+            throw new IllegalArgumentException("Background width must be non-negative");
+        }
+        this.backgroundW = backgroundW != null ? backgroundW : 0;
     }
 
     // Validate background border radius
@@ -75,6 +89,22 @@ public class TextSegment implements Segment {
             throw new IllegalArgumentException("Background border radius must be non-negative");
         }
         this.backgroundBorderRadius = backgroundBorderRadius != null ? backgroundBorderRadius : 0;
+    }
+
+    // Validate text border width
+    public void setTextBorderWidth(Integer textBorderWidth) {
+        if (textBorderWidth != null && textBorderWidth < 0) {
+            throw new IllegalArgumentException("Text border width must be non-negative");
+        }
+        this.textBorderWidth = textBorderWidth != null ? textBorderWidth : 0;
+    }
+
+    // Validate text border opacity
+    public void setTextBorderOpacity(Double textBorderOpacity) {
+        if (textBorderOpacity != null && (textBorderOpacity < 0.0 || textBorderOpacity > 1.0)) {
+            throw new IllegalArgumentException("Text border opacity must be between 0.0 and 1.0");
+        }
+        this.textBorderOpacity = textBorderOpacity != null ? textBorderOpacity : 1.0;
     }
 
     // Validate shadow blur radius
@@ -167,13 +197,18 @@ public class TextSegment implements Segment {
     public String getAlignment() { return alignment; }
     public String getBackgroundBorderColor() { return backgroundBorderColor; }
     public void setBackgroundBorderColor(String backgroundBorderColor) { this.backgroundBorderColor = backgroundBorderColor; }
+    public String getTextBorderColor() { return textBorderColor; }
+    public void setTextBorderColor(String textBorderColor) { this.textBorderColor = textBorderColor; }
+    public Integer getTextBorderWidth() { return textBorderWidth; }
+    public Double getTextBorderOpacity() { return textBorderOpacity; }
     public String getShadowColor() { return shadowColor; }
     public void setShadowColor(String shadowColor) { this.shadowColor = shadowColor; }
     public Integer getShadowOffsetX() { return shadowOffsetX; }
     public void setShadowOffsetX(Integer shadowOffsetX) { this.shadowOffsetX = shadowOffsetX; }
     public Integer getShadowOffsetY() { return shadowOffsetY; }
     public void setShadowOffsetY(Integer shadowOffsetY) { this.shadowOffsetY = shadowOffsetY; }
-    public Integer getBackgroundPadding() { return backgroundPadding; }
+    public Integer getBackgroundH() { return backgroundH; }
+    public Integer getBackgroundW() { return backgroundW; }
     public Integer getBackgroundBorderWidth() { return backgroundBorderWidth; }
     public Double getBackgroundOpacity() { return backgroundOpacity; }
     public Integer getBackgroundBorderRadius() { return backgroundBorderRadius; }
