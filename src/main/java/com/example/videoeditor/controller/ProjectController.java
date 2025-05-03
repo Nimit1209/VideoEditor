@@ -198,13 +198,24 @@ public class ProjectController {
             // Prepare response
             Map<String, Object> response = new HashMap<>();
             response.put("videoSegmentId", addedVideoSegment.getId());
-            response.put("layer", addedVideoSegment.getLayer()); // Include the assigned layer
+            response.put("layer", addedVideoSegment.getLayer());
             if (addedAudioSegment != null) {
                 response.put("audioSegmentId", addedAudioSegment.getId());
                 response.put("audioLayer", addedAudioSegment.getLayer());
+                response.put("audioPath", addedAudioSegment.getAudioPath());
+                response.put("waveformPath", addedAudioSegment.getWaveformPath());
+                response.put("audioStartTime", addedAudioSegment.getStartTime());
+                response.put("audioEndTime", addedAudioSegment.getEndTime());
+                response.put("audioTimelineStartTime", addedAudioSegment.getTimelineStartTime());
+                response.put("audioTimelineEndTime", addedAudioSegment.getTimelineEndTime());
+                response.put("audioVolume", addedAudioSegment.getVolume());
+                response.put("audioKeyframes", addedAudioSegment.getKeyframes() != null ? addedAudioSegment.getKeyframes() : new HashMap<>());
             }
 
             return ResponseEntity.ok(response);
+        } catch (IOException | InterruptedException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error adding video to timeline: " + e.getMessage());
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding video to timeline: " + e.getMessage());
@@ -570,8 +581,26 @@ public class ProjectController {
         try {
             User user = getUserFromToken(token);
             Project updatedProject = videoEditingService.uploadAudioToProject(user, projectId, audioFiles, audioFileNames);
-            return ResponseEntity.ok(updatedProject);
-        } catch (IOException e) {
+
+            // Extract audio metadata with waveform paths from audioJson
+            List<Map<String, String>> audioFilesMetadata = videoEditingService.getAudio(updatedProject);
+            List<Map<String, String>> responseAudioFiles = audioFilesMetadata.stream()
+                    .map(audio -> {
+                        Map<String, String> audioData = new HashMap<>();
+                        audioData.put("audioFileName", audio.get("audioFileName"));
+                        audioData.put("audioPath", audio.get("audioPath"));
+                        audioData.put("waveformPath", audio.get("waveformPath"));
+                        return audioData;
+                    })
+                    .collect(Collectors.toList());
+
+            // Prepare response
+            Map<String, Object> response = new HashMap<>();
+            response.put("project", updatedProject);
+            response.put("audioFiles", responseAudioFiles);
+
+            return ResponseEntity.ok(response);
+        } catch (IOException | InterruptedException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error uploading audio: " + e.getMessage());
         } catch (RuntimeException e) {
@@ -590,7 +619,7 @@ public class ProjectController {
             User user = getUserFromToken(token);
             Integer layer = request.get("layer") != null ? ((Number) request.get("layer")).intValue() : -1;
             Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : 0.0;
-            Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null; // Allow null
+            Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
             Double timelineStartTime = request.get("timelineStartTime") != null ?
                     ((Number) request.get("timelineStartTime")).doubleValue() : 0.0;
             Double timelineEndTime = request.get("timelineEndTime") != null ?
@@ -610,6 +639,9 @@ public class ProjectController {
             }
             if (audioFileName == null || audioFileName.isEmpty()) {
                 return ResponseEntity.badRequest().body("Audio filename is required");
+            }
+            if (volume < 0 || volume > 1) {
+                return ResponseEntity.badRequest().body("Volume must be between 0 and 1");
             }
 
             // Add audio to timeline
@@ -633,10 +665,15 @@ public class ProjectController {
             response.put("timelineEndTime", addedAudioSegment.getTimelineEndTime());
             response.put("startTime", addedAudioSegment.getStartTime());
             response.put("endTime", addedAudioSegment.getEndTime());
-            response.put("volume", volume);
+            response.put("volume", addedAudioSegment.getVolume());
+            response.put("audioPath", addedAudioSegment.getAudioPath());
+            response.put("waveformPath", addedAudioSegment.getWaveformPath());
             response.put("keyframes", addedAudioSegment.getKeyframes() != null ? addedAudioSegment.getKeyframes() : new HashMap<>());
 
             return ResponseEntity.ok(response);
+        } catch (IOException | InterruptedException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error adding audio to timeline: " + e.getMessage());
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding audio to timeline: " + e.getMessage());
@@ -695,10 +732,81 @@ public class ProjectController {
 
             videoEditingService.updateAudioSegment(
                     sessionId, audioSegmentId, startTime, endTime, timelineStartTime, timelineEndTime, volume, layer, parsedKeyframes);
-            return ResponseEntity.ok().build();
+
+            // Retrieve the updated audio segment
+            TimelineState timelineState = videoEditingService.getTimelineState(sessionId);
+            AudioSegment updatedAudioSegment = timelineState.getAudioSegments().stream()
+                    .filter(a -> a.getId().equals(audioSegmentId))
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Failed to find updated audio segment"));
+
+            // Prepare response
+            Map<String, Object> response = new HashMap<>();
+            response.put("audioSegmentId", updatedAudioSegment.getId());
+            response.put("layer", updatedAudioSegment.getLayer());
+            response.put("timelineStartTime", updatedAudioSegment.getTimelineStartTime());
+            response.put("timelineEndTime", updatedAudioSegment.getTimelineEndTime());
+            response.put("startTime", updatedAudioSegment.getStartTime());
+            response.put("endTime", updatedAudioSegment.getEndTime());
+            response.put("volume", updatedAudioSegment.getVolume());
+            response.put("audioPath", updatedAudioSegment.getAudioPath());
+            response.put("waveformPath", updatedAudioSegment.getWaveformPath());
+            response.put("keyframes", updatedAudioSegment.getKeyframes() != null ? updatedAudioSegment.getKeyframes() : new HashMap<>());
+
+            return ResponseEntity.ok(response);
+        } catch (IOException | InterruptedException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating audio segment: " + e.getMessage());
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error updating audio segment: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/{projectId}/waveforms/{filename:.+}")
+    public ResponseEntity<Resource> serveWaveform(
+            @RequestHeader(value = "Authorization", required = false) String token,
+            @PathVariable Long projectId,
+            @PathVariable String filename) {
+        try {
+            User user = null;
+            if (token != null && !token.isEmpty()) {
+                // Authenticate user if token is provided
+                user = getUserFromToken(token);
+            }
+
+            // Verify project exists
+            Project project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+
+            // If token is provided, verify user has access
+            if (user != null && !project.getUser().getId().equals(user.getId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
+            }
+
+            // Define waveform file path
+            String waveformDirectory = "audio/projects/" + projectId + "/waveforms/";
+            File waveformFile = new File(waveformDirectory, filename);
+
+            // Verify file existence
+            if (!waveformFile.exists() || !waveformFile.isFile()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            }
+
+            // Create resource and set content type
+            Resource resource = new FileSystemResource(waveformFile);
+            String contentType = "image/png"; // Waveforms are PNG files
+
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+        } catch (RuntimeException e) {
+            System.err.println("Error serving waveform: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        } catch (Exception e) {
+            System.err.println("Error serving waveform: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
 

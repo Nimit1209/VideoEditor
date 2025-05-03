@@ -8,12 +8,18 @@ import java.util.*;
 public class AudioSegment {
     private String id = UUID.randomUUID().toString();
     private String audioPath;
+    private String waveformPath; // Field for waveform image path
     private int layer; // Will be negative (-1, -2, -3, etc.)
     private double startTime;
     private double endTime;
     private double timelineStartTime;
     private double timelineEndTime;
     private Double volume = 1.0; // Changed to Double for nullable static value
+    private boolean isExtracted = false; // New field to indicate if audio is extracted
+
+    public void setExtracted(boolean extracted) {
+        isExtracted = extracted;
+    }
 
     // Keyframes for animatable properties
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
@@ -46,6 +52,8 @@ public class AudioSegment {
     public void setId(String id) { this.id = id; }
     public String getAudioPath() { return audioPath; }
     public void setAudioPath(String audioPath) { this.audioPath = audioPath; }
+    public String getWaveformPath() { return waveformPath; }
+    public void setWaveformPath(String waveformPath) { this.waveformPath = waveformPath; }
     public int getLayer() { return layer; }
     public void setLayer(int layer) { this.layer = layer; }
     public double getStartTime() { return startTime; }
@@ -58,4 +66,10 @@ public class AudioSegment {
     public void setTimelineEndTime(double timelineEndTime) { this.timelineEndTime = timelineEndTime; }
     public Double getVolume() { return volume; }
     public void setVolume(Double volume) { this.volume = volume; }
+    public boolean isExtracted() {
+        return isExtracted;
+    }
+    public void setExtractCidade(boolean isExtracted) {
+        this.isExtracted = isExtracted;
+    }
 }

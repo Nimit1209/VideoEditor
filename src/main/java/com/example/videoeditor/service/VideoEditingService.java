@@ -52,6 +52,7 @@ public class VideoEditingService {
         this.globalElementRepository = globalElementRepository;
     }
 
+
     @Data
     private class EditSession {
         private String sessionId;
@@ -154,13 +155,20 @@ public class VideoEditingService {
         });
     }
 
-    public void addAudio(Project project, String audioPath, String audioFileName) throws JsonProcessingException {
+    public void addAudio(Project project, String audioPath, String audioFileName, String waveformPath) throws JsonProcessingException {
         List<Map<String, String>> audioFiles = getAudio(project);
         Map<String, String> audioData = new HashMap<>();
         audioData.put("audioPath", audioPath);
         audioData.put("audioFileName", audioFileName);
+        if (waveformPath != null) {
+            audioData.put("waveformPath", waveformPath);
+        }
         audioFiles.add(audioData);
         project.setAudioJson(objectMapper.writeValueAsString(audioFiles));
+    }
+
+    public void addAudio(Project project, String audioPath, String audioFileName) throws JsonProcessingException {
+        addAudio(project, audioPath, audioFileName, null);
     }
 
     // Get extracted audio metadata from project
@@ -172,14 +180,21 @@ public class VideoEditingService {
     }
 
     // Add extracted audio metadata to project
-    public void addExtractedAudio(Project project, String audioPath, String audioFileName, String sourceVideoPath) throws JsonProcessingException {
+    public void addExtractedAudio(Project project, String audioPath, String audioFileName, String sourceVideoPath, String waveformPath) throws JsonProcessingException {
         List<Map<String, String>> extractedAudio = getExtractedAudio(project);
         Map<String, String> audioData = new HashMap<>();
         audioData.put("audioPath", audioPath);
         audioData.put("audioFileName", audioFileName);
         audioData.put("sourceVideoPath", sourceVideoPath);
+        if (waveformPath != null) {
+            audioData.put("waveformPath", waveformPath);
+        }
         extractedAudio.add(audioData);
         project.setExtractedAudioJson(objectMapper.writeValueAsString(extractedAudio));
+    }
+
+    public void addExtractedAudio(Project project, String audioPath, String audioFileName, String sourceVideoPath) throws JsonProcessingException {
+        addExtractedAudio(project, audioPath, audioFileName, sourceVideoPath, null);
     }
 
     public Project createProject(User user, String name, Integer width, Integer height, Float fps) throws JsonProcessingException {
@@ -276,7 +291,7 @@ public class VideoEditingService {
             Double timelineEndTime,
             Double startTime,
             Double endTime,
-            boolean createAudioSegment // New parameter
+            boolean createAudioSegment
     ) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
         if (session == null) {
@@ -319,7 +334,7 @@ public class VideoEditingService {
 
         Project project = projectRepository.findById(session.getProjectId())
                 .orElseThrow(() -> new RuntimeException("Project not found"));
-        String audioPath = null;
+        String audioPath;
         AudioSegment audioSegment = null;
 
         if (createAudioSegment) {
@@ -329,16 +344,21 @@ public class VideoEditingService {
             File audioFile = new File(projectAudioDir, audioFileName);
 
             List<Map<String, String>> extractedAudio = getExtractedAudio(project);
-            boolean audioExists = extractedAudio.stream()
-                    .anyMatch(audio -> audio.get("sourceVideoPath").equals(videoPath) && audio.get("audioFileName").equals(audioFileName));
+            Map<String, String> existingAudio = extractedAudio.stream()
+                    .filter(audio -> audio.get("sourceVideoPath").equals(videoPath) && audio.get("audioFileName").equals(audioFileName))
+                    .findFirst()
+                    .orElse(null);
 
-            if (audioExists && audioFile.exists()) {
+            String waveformPath = null;
+            if (existingAudio != null && audioFile.exists()) {
                 System.out.println("Reusing existing audio file: " + audioFile.getAbsolutePath());
-                audioPath = "audio/projects/" + session.getProjectId() + "/extracted/" + audioFileName;
+                audioPath = existingAudio.get("audioPath");
+                waveformPath = existingAudio.get("waveformPath");
             } else {
-                audioPath = extractAudioFromVideo(videoPath, session.getProjectId(), audioFileName);
-                System.out.println("Extracted new audio file: " + audioPath);
-                addExtractedAudio(project, audioPath, audioFileName, videoPath);
+                Map<String, String> extractionResult = extractAudioFromVideo(videoPath, session.getProjectId(), audioFileName);
+                audioPath = extractionResult.get("audioPath");
+                waveformPath = extractionResult.get("waveformPath");
+                System.out.println("Extracted new audio file: " + audioPath + ", waveform: " + waveformPath);
             }
 
             List<Map<String, String>> videos = getVideos(project);
@@ -359,6 +379,7 @@ public class VideoEditingService {
 
             audioSegment = new AudioSegment();
             audioSegment.setAudioPath(audioPath);
+            audioSegment.setWaveformPath(waveformPath);
             int audioLayer = findAvailableAudioLayer(session.getTimelineState(), timelineStartTime, timelineEndTime);
             audioSegment.setLayer(audioLayer);
             audioSegment.setStartTime(startTime);
@@ -366,6 +387,9 @@ public class VideoEditingService {
             audioSegment.setTimelineStartTime(timelineStartTime);
             audioSegment.setTimelineEndTime(timelineEndTime);
             audioSegment.setVolume(1.0);
+            audioSegment.setExtracted(true); // Set isExtracted to true
+        } else {
+            audioPath = null;
         }
 
         VideoSegment segment = new VideoSegment();
@@ -415,7 +439,7 @@ public class VideoEditingService {
         }
     }
 
-    private String extractAudioFromVideo(String videoPath, Long projectId, String audioFileName) throws IOException, InterruptedException {
+    private Map<String, String> extractAudioFromVideo(String videoPath, Long projectId, String audioFileName) throws IOException, InterruptedException {
         File videoFile = new File(baseDir, "videos/" + videoPath);
         if (!videoFile.exists()) {
             throw new IOException("Video file not found: " + videoFile.getAbsolutePath());
@@ -424,7 +448,7 @@ public class VideoEditingService {
         // Store audio in project-specific extracted folder: audio/projects/{projectId}/extracted/
         File audioDir = new File(baseDir, "audio/projects/" + projectId + "/extracted");
         if (!audioDir.exists()) {
-            audioDir.mkdirs(); // Create the project-specific extracted directory if it doesn't exist
+            audioDir.mkdirs();
         }
 
         // Remove the video file extension (e.g., .mp4) and append .mp3
@@ -445,8 +469,22 @@ public class VideoEditingService {
 
         executeFFmpegCommand(command);
 
-        // Return relative path to the project's extracted folder
-        return "audio/projects/" + projectId + "/extracted/" + cleanAudioFileName;
+        String relativePath = "audio/projects/" + projectId + "/extracted/" + cleanAudioFileName;
+
+        // Generate waveform image
+        String waveformPath = generateWaveformImage(relativePath, projectId, cleanAudioFileName);
+
+        // Update project with waveform path
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found"));
+        addExtractedAudio(project, relativePath, cleanAudioFileName, videoPath, waveformPath);
+        projectRepository.save(project);
+
+        // Return both audioPath and waveformPath
+        Map<String, String> result = new HashMap<>();
+        result.put("audioPath", relativePath);
+        result.put("waveformPath", waveformPath);
+        return result;
     }
 
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
@@ -839,7 +877,7 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
-    public Project uploadAudioToProject(User user, Long projectId, MultipartFile[] audioFiles, String[] audioFileNames) throws IOException {
+    public Project uploadAudioToProject(User user, Long projectId, MultipartFile[] audioFiles, String[] audioFileNames) throws IOException, InterruptedException {
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -852,7 +890,6 @@ public class VideoEditingService {
             projectAudioDir.mkdirs();
         }
 
-        List<String> relativePaths = new ArrayList<>();
         for (int i = 0; i < audioFiles.length; i++) {
             MultipartFile audioFile = audioFiles[i];
             String originalFileName = audioFile.getOriginalFilename();
@@ -865,10 +902,12 @@ public class VideoEditingService {
             audioFile.transferTo(destinationFile);
 
             String relativePath = "audio/projects/" + projectId + "/" + uniqueFileName;
-            relativePaths.add(relativePath);
+
+            // Generate waveform image
+            String waveformPath = generateWaveformImage(relativePath, projectId, uniqueFileName);
 
             try {
-                addAudio(project, relativePath, uniqueFileName);
+                addAudio(project, relativePath, uniqueFileName, waveformPath);
             } catch (JsonProcessingException e) {
                 throw new IOException("Failed to process audio data for file: " + uniqueFileName, e);
             }
@@ -911,7 +950,7 @@ public class VideoEditingService {
         if (targetAudio != null) {
             audioPath = targetAudio.get("audioPath");
         } else {
-            // If not found in audioJson, try extractedAudioJson
+            // Try extractedAudioJson
             List<Map<String, String>> extractedAudios = getExtractedAudio(project);
             Map<String, String> extractedAudio = extractedAudios.stream()
                     .filter(audio -> {
@@ -960,7 +999,7 @@ public class VideoEditingService {
         }
 
         double audioDuration = getAudioDuration(audioPath);
-        // MODIFIED: Round all input times
+        // Round all input times
         startTime = roundToThreeDecimals(startTime);
         endTime = roundToThreeDecimals(endTime);
         timelineStartTime = roundToThreeDecimals(timelineStartTime);
@@ -982,6 +1021,30 @@ public class VideoEditingService {
         audioSegment.setTimelineStartTime(timelineStartTime);
         audioSegment.setTimelineEndTime(timelineEndTime);
         audioSegment.setVolume(1.0);
+        audioSegment.setExtracted(false); // Explicitly set isExtracted to false
+
+        // Retrieve waveformPath from audioJson or extractedAudioJson
+        Project project = projectRepository.findById(session.getProjectId())
+                .orElseThrow(() -> new RuntimeException("Project not found"));
+        String waveformPath = null;
+        List<Map<String, String>> audioFiles = getAudio(project);
+        waveformPath = audioFiles.stream()
+                .filter(audio -> audio.get("audioPath").equals(audioPath))
+                .map(audio -> audio.get("waveformPath"))
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        if (waveformPath == null) {
+            List<Map<String, String>> extractedAudio = getExtractedAudio(project);
+            waveformPath = extractedAudio.stream()
+                    .filter(audio -> audio.get("audioPath").equals(audioPath))
+                    .map(audio -> audio.get("waveformPath"))
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        audioSegment.setWaveformPath(waveformPath);
 
         timelineState.getAudioSegments().add(audioSegment);
         session.setLastAccessTime(System.currentTimeMillis());
@@ -1022,7 +1085,6 @@ public class VideoEditingService {
                     if (kf.getTime() < 0 || kf.getTime() > (targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime())) {
                         throw new IllegalArgumentException("Keyframe time out of segment bounds for property " + property);
                     }
-                    // MODIFIED: Round keyframe time to three decimal places
                     kf.setTime(roundToThreeDecimals(kf.getTime()));
                     targetSegment.addKeyframe(property, kf);
                 }
@@ -1031,14 +1093,13 @@ public class VideoEditingService {
                 }
             }
         }
+
         boolean timelineChanged = false;
         if (timelineStartTime != null) {
-            // MODIFIED: Round timelineStartTime to three decimal places
             timelineStartTime = roundToThreeDecimals(timelineStartTime);
             targetSegment.setTimelineStartTime(timelineStartTime);
             timelineChanged = true;
         }
-        // MODIFIED: Round timelineEndTime
         if (timelineEndTime != null) {
             timelineEndTime = roundToThreeDecimals(timelineEndTime);
             targetSegment.setTimelineEndTime(timelineEndTime);
@@ -1055,7 +1116,6 @@ public class VideoEditingService {
 
         if (startTime != null || endTime != null || timelineChanged) {
             if (startTime != null) {
-                // MODIFIED: Round startTime to three decimal places
                 startTime = roundToThreeDecimals(startTime);
                 if (startTime < 0 || startTime >= audioDuration) {
                     throw new RuntimeException("Start time out of bounds");
@@ -1063,7 +1123,6 @@ public class VideoEditingService {
                 targetSegment.setStartTime(startTime);
             }
             if (endTime != null) {
-                // MODIFIED: Round endTime to three decimal places
                 endTime = roundToThreeDecimals(endTime);
                 if (endTime <= targetSegment.getStartTime() || endTime > audioDuration) {
                     throw new RuntimeException("End time out of bounds");
@@ -1102,7 +1161,8 @@ public class VideoEditingService {
                 }
             }
         }
-        // MODIFIED: Ensure timeline duration reflects rounded values
+
+        // Ensure timeline duration reflects rounded values
         double newTimelineDuration = roundToThreeDecimals(targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime());
         double newClipDuration = roundToThreeDecimals(targetSegment.getEndTime() - targetSegment.getStartTime());
         if (newTimelineDuration < newClipDuration) {
@@ -1617,6 +1677,7 @@ public class VideoEditingService {
         File videoDir = new File(baseDir, "videos/projects/" + projectId);
         File imageDir = new File(baseDir, "images/projects/" + projectId);
         File audioDir = new File(baseDir, "audio/projects/" + projectId);
+        File waveformDir = new File(baseDir, "audio/projects/" + projectId + "/waveforms");
 
         // Delete directories if they exist
         if (videoDir.exists()) {
@@ -1627,6 +1688,9 @@ public class VideoEditingService {
         }
         if (audioDir.exists()) {
             deleteDirectory(audioDir);
+        }
+        if (waveformDir.exists()) {
+            deleteDirectory(waveformDir);
         }
     }
 
@@ -1900,6 +1964,44 @@ public class VideoEditingService {
         }
 
         session.setLastAccessTime(System.currentTimeMillis());
+    }
+
+    private String generateWaveformImage(String audioPath, Long projectId, String uniqueFileName) throws IOException, InterruptedException {
+        File audioFile = new File(baseDir, audioPath);
+        if (!audioFile.exists()) {
+            throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
+        }
+
+        // Create waveform directory: audio/projects/{projectId}/waveforms/
+        File waveformDir = new File(baseDir, "audio/projects/" + projectId + "/waveforms");
+        if (!waveformDir.exists()) {
+            waveformDir.mkdirs();
+        }
+
+        // Generate waveform filename based on audio filename
+        String waveformFileName = "waveform_" + uniqueFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".png";
+        File waveformFile = new File(waveformDir, waveformFileName);
+
+        // FFmpeg command to generate waveform image
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+        command.add("-i");
+        command.add(audioFile.getAbsolutePath());
+        command.add("-filter_complex");
+        command.add(
+                "[0:a]showwavespic=s=1920x120:colors=0x00FFFF@1.0|0xFFFFFF@0.8:split_channels=0,format=rgba[w];" + // Waveform with cyan and white, semi-transparent
+                        "color=s=1920x120:c=0x1E2A44@1.0,format=rgba[bg];" + // Solid dark blue-gray background
+                        "[bg][w]overlay=0:0:format=rgb,format=rgba" // Overlay waveform on background
+        );
+        command.add("-frames:v");
+        command.add("1");
+        command.add("-y"); // Overwrite output file if exists
+        command.add(waveformFile.getAbsolutePath());
+
+        executeFFmpegCommand(command);
+
+        // Return relative path
+        return "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
     }
 
     public File exportProject(String sessionId) throws IOException, InterruptedException {
@@ -3100,9 +3202,9 @@ public class VideoEditingService {
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
         String[] lines = ts.getText().split("\n");
-        int lineHeight = fm.getHeight();
-        double lineSpacing = 1.2;
-        int totalTextHeight = (int) (lineHeight * lines.length * lineSpacing);
+        double lineSpacing = 1.2; // Match frontend's lineHeight = fontSize * 1.2
+        int lineHeight = (int) (baseFontSize * lineSpacing); // Use font size directly for consistency
+        int totalTextHeight = lines.length * lineHeight;
         int maxTextWidth = 0;
         for (String line : lines) {
             int lineWidth = fm.stringWidth(line);
@@ -3110,12 +3212,10 @@ public class VideoEditingService {
                 maxTextWidth = lineWidth;
             }
         }
-        // Calculate text block height including ascent and descent for proper centering
-        int textBlockHeight = totalTextHeight - (int) (lineHeight * (lineSpacing - 1.0));
-        if (lines.length > 1) {
-            textBlockHeight += (int) (lineHeight * (lineSpacing - 1.0) * (lines.length - 1));
-        } else {
-            textBlockHeight = fm.getAscent() + fm.getDescent();
+        // Calculate text block height for centering
+        int textBlockHeight = totalTextHeight;
+        if (lines.length == 1) {
+            textBlockHeight = fm.getAscent() + fm.getDescent(); // Single line uses ascent + descent
         }
         g2d.dispose();
         tempImage.flush();
@@ -3126,31 +3226,28 @@ public class VideoEditingService {
         int bgBorderWidth = (int) ((ts.getBackgroundBorderWidth() != null ? ts.getBackgroundBorderWidth() : 0) * maxScale * BORDER_SCALE_FACTOR);
         int borderRadius = (int) ((ts.getBackgroundBorderRadius() != null ? ts.getBackgroundBorderRadius() : 0) * maxScale * RESOLUTION_MULTIPLIER);
         int textBorderWidth = (int) ((ts.getTextBorderWidth() != null ? ts.getTextBorderWidth() : 0) * maxScale * BORDER_SCALE_FACTOR);
-        float textBorderOpacity = ts.getTextBorderOpacity() != null ? ts.getTextBorderOpacity().floatValue() : 1.0f;
 
         // Calculate content dimensions (text size + background dimensions)
         int contentWidth = maxTextWidth + bgWidth;
-        int contentHeight = textBlockHeight + bgHeight;
+        int contentHeight = textBlockHeight + bgHeight; // Restore original additive logic
 
-        // Cap dimensions to prevent excessive memory usage, prioritizing text size
-        int maxDimension = (int) (Math.max(canvasWidth, canvasHeight) * RESOLUTION_MULTIPLIER * 1.5); // Increase threshold by 1.5x
+        // Cap dimensions to prevent excessive memory usage
+        int maxDimension = (int) (Math.max(canvasWidth, canvasHeight) * RESOLUTION_MULTIPLIER * 1.5);
         double scaleDown = 1.0;
-        if (contentWidth + 2 * bgBorderWidth + 2 * textBorderWidth > maxDimension || contentHeight + 2 * bgBorderWidth + 2 * textBorderWidth > maxDimension) {
-            // Calculate scaleDown based on content dimensions, but limit reduction to preserve text
+        if (contentWidth + 2 * bgBorderWidth + 2 * textBorderWidth > maxDimension ||
+                contentHeight + 2 * bgBorderWidth + 2 * textBorderWidth > maxDimension) {
             scaleDown = Math.min(
                     maxDimension / (double) (contentWidth + 2 * bgBorderWidth + 2 * textBorderWidth),
                     maxDimension / (double) (contentHeight + 2 * bgBorderWidth + 2 * textBorderWidth)
             );
-            // Cap scaleDown to prevent excessive reduction of text size
             scaleDown = Math.max(scaleDown, 0.5); // Ensure at least 50% of original size
             bgWidth = (int) (bgWidth * scaleDown);
             bgHeight = (int) (bgHeight * scaleDown);
             bgBorderWidth = (int) (bgBorderWidth * scaleDown);
             borderRadius = (int) (borderRadius * scaleDown);
             textBorderWidth = (int) (textBorderWidth * scaleDown);
-            // Recalculate content dimensions without scaling text
             contentWidth = maxTextWidth + bgWidth;
-            contentHeight = textBlockHeight + bgHeight;
+            contentHeight = textBlockHeight + bgHeight; // Recompute with scaled values
         }
 
         // Calculate final image dimensions
@@ -3215,11 +3312,14 @@ public class VideoEditingService {
 
         // Draw text with border (stroke) if specified
         String alignment = ts.getAlignment() != null ? ts.getAlignment().toLowerCase() : "center";
-        int y = bgBorderWidth + textBorderWidth + (contentHeight - textBlockHeight) / 2 + fm.getAscent();
+        // Center text vertically within contentHeight, accounting for background height
+        int textYStart = bgBorderWidth + textBorderWidth + (contentHeight - textBlockHeight) / 2 + fm.getAscent();
+        int y = textYStart;
         for (String line : lines) {
             int x = calculateXPosition(line, alignment, totalWidth, fm, 0, bgBorderWidth + textBorderWidth);
             if (textBorderColor != null && textBorderWidth > 0) {
                 // Draw text border (stroke)
+                float textBorderOpacity = ts.getTextBorderOpacity() != null ? ts.getTextBorderOpacity().floatValue() : 1.0f;
                 g2d.setColor(new Color(textBorderColor.getRed(), textBorderColor.getGreen(), textBorderColor.getBlue(), (int) (textBorderOpacity * 255)));
                 g2d.setStroke(new BasicStroke((float) textBorderWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 FontRenderContext frc = g2d.getFontRenderContext();
@@ -3230,7 +3330,7 @@ public class VideoEditingService {
             // Draw text fill
             g2d.setColor(fontColor);
             g2d.drawString(line, x, y);
-            y += (int) (lineHeight * lineSpacing);
+            y += lineHeight; // Use computed lineHeight for consistent spacing
         }
 
         g2d.dispose();

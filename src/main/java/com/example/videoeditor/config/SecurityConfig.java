@@ -62,18 +62,19 @@ public class SecurityConfig implements WebMvcConfigurer {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/auth/**").permitAll()
                         .requestMatchers("/api/global-elements", "/api/global-elements/**").permitAll() // Public access
+                        .requestMatchers("/projects/{projectId}/waveforms/{filename}").permitAll()
                         .requestMatchers("/developer/**").authenticated() // Requires JWT, role checked in JwtFilter
-                        .requestMatchers("/videos/upload", "/videos/my-videos", "/videos/merge", "/videos/edited-videos", "/videos/trim", "/videos/split", "/videos/duration/**").authenticated()
-                        .requestMatchers("/projects/{projectId}/images/{filename}").permitAll()
+                        .requestMatchers("/videos/upload", "/videos/my-videos", "/videos/merge", "/videos/edited-videos","/videos/trim", "/videos/split", "/videos/duration/**").authenticated()
+                        .requestMatchers("/projects/{projectId}/images/{filename}").permitAll() // Place this BEFORE the general /projects/** rule
                         .requestMatchers("/projects/{projectId}/audio/{filename}").permitAll()
                         .requestMatchers("/projects/**", "/projects/{projectId}/add-to-timeline").authenticated()
-                        .requestMatchers("/projects/{projectId}/export").authenticated()
                         .requestMatchers(HttpMethod.GET, "/videos/edited-videos/**").permitAll()
-                        .requestMatchers("/videos/**", "/videos/*").permitAll()
+                        .requestMatchers("/videos/**", "/videos/*").permitAll()  // ✅ Allow public video access
                         .anyRequest().authenticated()
                 )
                 .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(new JwtFilter(jwtUtil), UsernamePasswordAuthenticationFilter.class);
+
 
         return http.build();
     }
@@ -87,10 +88,12 @@ public class SecurityConfig implements WebMvcConfigurer {
                 .allowCredentials(true);
     }
 
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
+
 
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration authConfig) throws Exception {
