@@ -52,6 +52,22 @@ public class VideoSegment implements Segment {
         propertyKeyframes.sort(Comparator.comparingDouble(Keyframe::getTime));
     }
 
+    public void updateKeyframe(String property, Keyframe updatedKeyframe) {
+        List<Keyframe> propertyKeyframes = keyframes.get(property);
+        if (propertyKeyframes != null) {
+            // Find and update the keyframe at the specified time
+            for (int i = 0; i < propertyKeyframes.size(); i++) {
+                Keyframe existing = propertyKeyframes.get(i);
+                if (Math.abs(existing.getTime() - updatedKeyframe.getTime()) < 0.0001) {
+                    propertyKeyframes.set(i, updatedKeyframe);
+                    return; // Update complete, no need to sort since time didn't change
+                }
+            }
+        }
+        // Optionally throw an exception if no keyframe is found
+        // throw new IllegalArgumentException("No keyframe found for property " + property + " at time " + updatedKeyframe.getTime());
+    }
+
     public void removeKeyframe(String property, double time) {
         List<Keyframe> propertyKeyframes = keyframes.get(property);
         if (propertyKeyframes != null) {

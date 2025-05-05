@@ -15,7 +15,6 @@ import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -1109,6 +1108,38 @@ public class ProjectController {
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error adding keyframe: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/{projectId}/update-keyframe")
+    public ResponseEntity<?> updateKeyframe(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @RequestParam String sessionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            User user = getUserFromToken(token);
+
+            String segmentId = (String) request.get("segmentId");
+            String segmentType = (String) request.get("segmentType");
+            String property = (String) request.get("property");
+            Double time = request.containsKey("time") ? Double.valueOf(request.get("time").toString()) : null;
+            Object value = request.get("value");
+            String interpolationType = (String) request.getOrDefault("interpolationType", "linear");
+
+            if (segmentId == null || segmentType == null || property == null || time == null || value == null) {
+                return ResponseEntity.badRequest().body("Missing required parameters: segmentId, segmentType, property, time, or value");
+            }
+            if (time < 0) {
+                return ResponseEntity.badRequest().body("Time must be non-negative");
+            }
+
+            Keyframe keyframe = new Keyframe(time, value, interpolationType);
+            videoEditingService.updateKeyframeToSegment(sessionId, segmentId, segmentType, property, keyframe);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating keyframe: " + e.getMessage());
         }
     }
 

@@ -24,6 +24,7 @@ import java.awt.font.TextLayout;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.nio.file.Paths;
 import java.text.DecimalFormat;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -1633,6 +1634,62 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
+    public void updateKeyframeToSegment(String sessionId, String segmentId, String segmentType, String property, Keyframe keyframe) {
+        EditSession session = getSession(sessionId);
+        keyframe.setTime(roundToThreeDecimals(keyframe.getTime()));
+
+        // Validate keyframe time
+        if (keyframe.getTime() < 0) {
+            throw new IllegalArgumentException("Keyframe time must be non-negative");
+        }
+
+        switch (segmentType.toLowerCase()) {
+            case "video":
+                VideoSegment video = session.getTimelineState().getSegments().stream()
+                        .filter(s -> s.getId().equals(segmentId))
+                        .findFirst()
+                        .orElseThrow(() -> new RuntimeException("Video segment not found: " + segmentId));
+                if (keyframe.getTime() > (video.getTimelineEndTime() - video.getTimelineStartTime())) {
+                    throw new IllegalArgumentException("Keyframe time out of segment bounds for video segment");
+                }
+                video.updateKeyframe(property, keyframe);
+                break;
+            case "image":
+                ImageSegment image = session.getTimelineState().getImageSegments().stream()
+                        .filter(s -> s.getId().equals(segmentId))
+                        .findFirst()
+                        .orElseThrow(() -> new RuntimeException("Image segment not found: " + segmentId));
+                if (keyframe.getTime() > (image.getTimelineEndTime() - image.getTimelineStartTime())) {
+                    throw new IllegalArgumentException("Keyframe time out of segment bounds for image segment");
+                }
+                image.updateKeyframe(property, keyframe);
+                break;
+            case "text":
+                TextSegment text = session.getTimelineState().getTextSegments().stream()
+                        .filter(s -> s.getId().equals(segmentId))
+                        .findFirst()
+                        .orElseThrow(() -> new RuntimeException("Text segment not found: " + segmentId));
+                if (keyframe.getTime() > (text.getTimelineEndTime() - text.getTimelineStartTime())) {
+                    throw new IllegalArgumentException("Keyframe time out of segment bounds for text segment");
+                }
+                text.updateKeyframe(property, keyframe);
+                break;
+            case "audio":
+                AudioSegment audio = session.getTimelineState().getAudioSegments().stream()
+                        .filter(s -> s.getId().equals(segmentId))
+                        .findFirst()
+                        .orElseThrow(() -> new RuntimeException("Audio segment not found: " + segmentId));
+                if (keyframe.getTime() > (audio.getTimelineEndTime() - audio.getTimelineStartTime())) {
+                    throw new IllegalArgumentException("Keyframe time out of segment bounds for audio segment");
+                }
+                audio.updateKeyframe(property, keyframe);
+                break;
+            default:
+                throw new IllegalArgumentException("Invalid segment type: " + segmentType);
+        }
+        session.setLastAccessTime(System.currentTimeMillis());
+    }
+
     public void removeKeyframeFromSegment(String sessionId, String segmentId, String segmentType, String property, double time) {
         EditSession session = getSession(sessionId);
         // Round the time to three decimal places for consistency
@@ -2004,6 +2061,52 @@ public class VideoEditingService {
         return "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
     }
 
+    public double getAudioDuration(Long projectId, String filename) throws IOException, InterruptedException {
+        String baseDir = System.getProperty("user.dir");
+        // Define both possible paths
+        String extractedPath = Paths.get(baseDir, "audio/projects", String.valueOf(projectId), "extracted", filename).toString();
+        String directPath = Paths.get(baseDir, "audio/projects", String.valueOf(projectId), filename).toString();
+
+        // Try extracted path first, then direct path
+        String[] possiblePaths = {extractedPath, directPath};
+        String validPath = null;
+
+        for (String path : possiblePaths) {
+            File audioFile = new File(path);
+            if (audioFile.exists()) {
+                validPath = path;
+                break;
+            }
+        }
+
+        if (validPath == null) {
+            throw new IOException("Audio file not found at either path for project ID: " + projectId + ", filename: " + filename);
+        }
+
+        ProcessBuilder builder = new ProcessBuilder(
+                "C:\\Users\\raj.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffprobe.exe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                validPath
+        );
+
+        System.out.println("Attempting to get duration for audio at path: " + validPath);
+
+        builder.redirectErrorStream(true);
+
+        Process process = builder.start();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        String duration = reader.readLine();
+        int exitCode = process.waitFor();
+
+        if (exitCode != 0 || duration == null) {
+            throw new IOException("Failed to get audio duration for file: " + filename);
+        }
+
+        return Double.parseDouble(duration);
+    }
+
     public File exportProject(String sessionId) throws IOException, InterruptedException {
         EditSession session = getSession(sessionId);
 
@@ -2260,6 +2363,8 @@ public class VideoEditingService {
                                     filterComplex.append("hflip,");
                                 } else if (filterValue.equals("vertical")) {
                                     filterComplex.append("vflip,");
+                                } else if (filterValue.equals("both")) {
+                                    filterComplex.append("hflip,vflip,");
                                 }
                                 break;
                             default:
@@ -2611,6 +2716,8 @@ public class VideoEditingService {
                                     filterComplex.append("hflip,");
                                 } else if (filterValue.equals("vertical")) {
                                     filterComplex.append("vflip,");
+                                } else if (filterValue.equals("both")) {
+                                    filterComplex.append("hflip,vflip,");
                                 }
                                 break;
                             default:
@@ -3228,8 +3335,9 @@ public class VideoEditingService {
         int textBorderWidth = (int) ((ts.getTextBorderWidth() != null ? ts.getTextBorderWidth() : 0) * maxScale * BORDER_SCALE_FACTOR);
 
         // Calculate content dimensions (text size + background dimensions)
-        int contentWidth = maxTextWidth + bgWidth;
-        int contentHeight = textBlockHeight + bgHeight; // Restore original additive logic
+        // Replace the existing calculations
+        int contentWidth = maxTextWidth + bgWidth + 2 * textBorderWidth; // Include text border width
+        int contentHeight = textBlockHeight + bgHeight + 2 * textBorderWidth; // Include text border height
 
         // Cap dimensions to prevent excessive memory usage
         int maxDimension = (int) (Math.max(canvasWidth, canvasHeight) * RESOLUTION_MULTIPLIER * 1.5);
@@ -3265,6 +3373,7 @@ public class VideoEditingService {
         fm = g2d.getFontMetrics();
 
         // Draw background
+        // Replace the background drawing logic
         if (bgColor != null) {
             float bgOpacity = ts.getBackgroundOpacity() != null ? ts.getBackgroundOpacity().floatValue() : 1.0f;
             g2d.setColor(new Color(bgColor.getRed(), bgColor.getGreen(), bgColor.getBlue(), (int) (bgOpacity * 255)));
@@ -3272,8 +3381,8 @@ public class VideoEditingService {
                 g2d.fillRoundRect(
                         bgBorderWidth + textBorderWidth,
                         bgBorderWidth + textBorderWidth,
-                        contentWidth,
-                        contentHeight,
+                        contentWidth, // Updated to include textBorderWidth
+                        contentHeight, // Updated to include textBorderWidth
                         borderRadius,
                         borderRadius
                 );
@@ -3281,13 +3390,14 @@ public class VideoEditingService {
                 g2d.fillRect(
                         bgBorderWidth + textBorderWidth,
                         bgBorderWidth + textBorderWidth,
-                        contentWidth,
-                        contentHeight
+                        contentWidth, // Updated
+                        contentHeight // Updated
                 );
             }
         }
 
         // Draw background border
+        // Replace the background border drawing logic
         if (bgBorderColor != null && bgBorderWidth > 0) {
             g2d.setColor(bgBorderColor);
             g2d.setStroke(new BasicStroke((float) bgBorderWidth));
@@ -3295,8 +3405,8 @@ public class VideoEditingService {
                 g2d.drawRoundRect(
                         bgBorderWidth / 2 + textBorderWidth,
                         bgBorderWidth / 2 + textBorderWidth,
-                        contentWidth + bgBorderWidth,
-                        contentHeight + bgBorderWidth,
+                        contentWidth + bgBorderWidth, // Updated
+                        contentHeight + bgBorderWidth, // Updated
                         borderRadius + bgBorderWidth,
                         borderRadius + bgBorderWidth
                 );
@@ -3304,8 +3414,8 @@ public class VideoEditingService {
                 g2d.drawRect(
                         bgBorderWidth / 2 + textBorderWidth,
                         bgBorderWidth / 2 + textBorderWidth,
-                        contentWidth + bgBorderWidth,
-                        contentHeight + bgBorderWidth
+                        contentWidth + bgBorderWidth, // Updated
+                        contentHeight + bgBorderWidth // Updated
                 );
             }
         }
