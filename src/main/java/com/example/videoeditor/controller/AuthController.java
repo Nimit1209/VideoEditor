@@ -2,6 +2,10 @@ package com.example.videoeditor.controller;
 
 import com.example.videoeditor.dto.AuthRequest;
 import com.example.videoeditor.dto.AuthResponse;
+import com.example.videoeditor.dto.UserProfileResponse;
+import com.example.videoeditor.entity.User;
+import com.example.videoeditor.repository.UserRepository;
+import com.example.videoeditor.security.JwtUtil;
 import com.example.videoeditor.service.AuthService;
 import jakarta.mail.MessagingException;
 import org.springframework.http.HttpStatus;
@@ -12,9 +16,13 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/auth")
 public class AuthController {
     private final AuthService authService;
+    private final JwtUtil jwtUtil;
+    private final UserRepository userRepository;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, JwtUtil jwtUtil, UserRepository userRepository) {
         this.authService = authService;
+        this.jwtUtil = jwtUtil;
+        this.userRepository = userRepository;
     }
 
     @PostMapping("/register")
@@ -91,6 +99,28 @@ public class AuthController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AuthResponse(null, request.getEmail(), null, e.getMessage(), false));
         }
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<UserProfileResponse> getUserProfile(@RequestHeader("Authorization") String authHeader) {
+        String token = authHeader.substring(7); // Remove "Bearer " prefix
+        String userEmail = jwtUtil.extractEmail(token);
+
+        User user = userRepository.findByEmail(userEmail)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Log the profile picture URL for debugging
+        System.out.println("Profile Picture URL: " + user.getProfilePicture());
+
+
+        UserProfileResponse profileResponse = new UserProfileResponse(
+                user.getEmail(),
+                user.getName(),
+                user.getProfilePicture(),
+                user.isGoogleAuth()
+        );
+
+        return ResponseEntity.ok(profileResponse);
     }
 }
 

@@ -176,6 +176,10 @@ public class AuthService {
         GoogleIdToken.Payload payload = idToken.getPayload();
         String email = payload.getEmail();
         String name = (String) payload.get("name");
+        String picture = (String) payload.get("picture");  // Get the profile picture URL
+
+        // Log the picture URL from Google
+        System.out.println("Google profile picture URL: " + picture);
 
         Optional<User> existingUserOpt = userRepository.findByEmail(email);
         User user;
@@ -183,6 +187,10 @@ public class AuthService {
             user = existingUserOpt.get();
             if (name != null && (user.getName() == null || user.getName().isEmpty())) {
                 user.setName(name);
+            }
+            // Update profile picture from Google
+            if (picture != null) {
+                user.setProfilePicture(picture);
             }
             user.setGoogleAuth(true);
             if (user.getPassword() == null || user.getPassword().isEmpty()) {
@@ -194,9 +202,10 @@ public class AuthService {
             user = new User();
             user.setEmail(email);
             user.setName(name);
+            user.setProfilePicture(picture);  // Set profile picture for new users
             user.setPassword(passwordEncoder.encode("GOOGLE_AUTH_" + System.currentTimeMillis()));
             user.setGoogleAuth(true);
-            user.setEmailVerified(false);
+            user.setEmailVerified(true);  // Set email as verified for Google users
             userRepository.save(user);
         }
 

@@ -37,6 +37,18 @@ public class User {
         createdAt = LocalDateTime.now();
     }
 
+    // Add this field to your User.java entity class
+    private String profilePicture;
+
+    // Add getter and setter
+    public String getProfilePicture() {
+        return profilePicture;
+    }
+
+    public void setProfilePicture(String profilePicture) {
+        this.profilePicture = profilePicture;
+    }
+
     // Getters and setters (unchanged)
     public Long getId() {
         return id;
