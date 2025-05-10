@@ -3,12 +3,22 @@ package com.example.videoeditor.dto;
 public class AuthRequest {
     private String email;
     private String password;
+    private String name; // Add this
 
     public AuthRequest() {}
 
-    public AuthRequest(String email, String password) {
+    public AuthRequest(String email, String password, String name) {
         this.email = email;
         this.password = password;
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
     }
 
     public String getEmail() {

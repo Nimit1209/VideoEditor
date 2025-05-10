@@ -15,6 +15,7 @@ import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -202,7 +203,7 @@ public class ProjectController {
                 response.put("audioSegmentId", addedAudioSegment.getId());
                 response.put("audioLayer", addedAudioSegment.getLayer());
                 response.put("audioPath", addedAudioSegment.getAudioPath());
-                response.put("waveformPath", addedAudioSegment.getWaveformPath());
+                response.put("waveformJsonPath", addedAudioSegment.getWaveformJsonPath());
                 response.put("audioStartTime", addedAudioSegment.getStartTime());
                 response.put("audioEndTime", addedAudioSegment.getEndTime());
                 response.put("audioTimelineStartTime", addedAudioSegment.getTimelineStartTime());
@@ -325,7 +326,18 @@ public class ProjectController {
             Map<String, Object> response = new HashMap<>();
             response.put("videoSegment", segment);
             if (audioSegment != null) {
-                response.put("audioSegment", audioSegment);
+                Map<String, Object> audioData = new HashMap<>();
+                audioData.put("id", audioSegment.getId());
+                audioData.put("audioPath", audioSegment.getAudioPath());
+                audioData.put("layer", audioSegment.getLayer());
+                audioData.put("startTime", audioSegment.getStartTime());
+                audioData.put("endTime", audioSegment.getEndTime());
+                audioData.put("timelineStartTime", audioSegment.getTimelineStartTime());
+                audioData.put("timelineEndTime", audioSegment.getTimelineEndTime());
+                audioData.put("volume", audioSegment.getVolume());
+                audioData.put("waveformJsonPath", audioSegment.getWaveformJsonPath());
+                audioData.put("keyframes", audioSegment.getKeyframes() != null ? audioSegment.getKeyframes() : new HashMap<>());
+                response.put("audioSegment", audioData);
             }
 
             return ResponseEntity.ok(response);
@@ -581,14 +593,14 @@ public class ProjectController {
             User user = getUserFromToken(token);
             Project updatedProject = videoEditingService.uploadAudioToProject(user, projectId, audioFiles, audioFileNames);
 
-            // Extract audio metadata with waveform paths from audioJson
+            // Extract audio metadata with waveform JSON paths from audioJson
             List<Map<String, String>> audioFilesMetadata = videoEditingService.getAudio(updatedProject);
             List<Map<String, String>> responseAudioFiles = audioFilesMetadata.stream()
                     .map(audio -> {
                         Map<String, String> audioData = new HashMap<>();
                         audioData.put("audioFileName", audio.get("audioFileName"));
                         audioData.put("audioPath", audio.get("audioPath"));
-                        audioData.put("waveformPath", audio.get("waveformPath"));
+                        audioData.put("waveformJsonPath", audio.get("waveformJsonPath"));
                         return audioData;
                     })
                     .collect(Collectors.toList());
@@ -666,7 +678,7 @@ public class ProjectController {
             response.put("endTime", addedAudioSegment.getEndTime());
             response.put("volume", addedAudioSegment.getVolume());
             response.put("audioPath", addedAudioSegment.getAudioPath());
-            response.put("waveformPath", addedAudioSegment.getWaveformPath());
+            response.put("waveformJsonPath", addedAudioSegment.getWaveformJsonPath());
             response.put("keyframes", addedAudioSegment.getKeyframes() != null ? addedAudioSegment.getKeyframes() : new HashMap<>());
 
             return ResponseEntity.ok(response);
@@ -749,7 +761,7 @@ public class ProjectController {
             response.put("endTime", updatedAudioSegment.getEndTime());
             response.put("volume", updatedAudioSegment.getVolume());
             response.put("audioPath", updatedAudioSegment.getAudioPath());
-            response.put("waveformPath", updatedAudioSegment.getWaveformPath());
+            response.put("waveformJsonPath", updatedAudioSegment.getWaveformJsonPath());
             response.put("keyframes", updatedAudioSegment.getKeyframes() != null ? updatedAudioSegment.getKeyframes() : new HashMap<>());
 
             return ResponseEntity.ok(response);
@@ -804,6 +816,52 @@ public class ProjectController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
         } catch (Exception e) {
             System.err.println("Error serving waveform: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
+        }
+    }
+
+    @GetMapping("/{projectId}/waveform-json/{filename:.+}")
+    public ResponseEntity<Resource> serveWaveformJson(
+            @RequestHeader(value = "Authorization", required = false) String token,
+            @PathVariable Long projectId,
+            @PathVariable String filename) {
+        try {
+            User user = null;
+            if (token != null && !token.isEmpty()) {
+                user = getUserFromToken(token);
+            }
+
+            // Verify project exists
+            Project project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+
+            // If token is provided, verify user has access
+            if (user != null && !project.getUser().getId().equals(user.getId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
+            }
+
+            // Define waveform JSON file path
+            String waveformDirectory = "audio/projects/" + projectId + "/waveforms/";
+            File waveformFile = new File(waveformDirectory, filename);
+
+            // Verify file existence
+            if (!waveformFile.exists() || !waveformFile.isFile()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            }
+
+            // Create resource and set content type
+            Resource resource = new FileSystemResource(waveformFile);
+            String contentType = "application/json";
+
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+        } catch (RuntimeException e) {
+            System.err.println("Error serving waveform JSON: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        } catch (Exception e) {
+            System.err.println("Error serving waveform JSON: " + e.getMessage());
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
@@ -1574,6 +1632,38 @@ public class ProjectController {
             System.err.println("Error serving audio: " + e.getMessage());
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
+        }
+    }
+
+    @GetMapping("/{projectId}/audio-duration/{filename:.+}")
+    public ResponseEntity<Double> getAudioDuration(
+            @RequestHeader("Authorization") String token,
+            @PathVariable Long projectId,
+            @PathVariable String filename) {
+        try {
+            String email = jwtUtil.extractEmail(token.substring(7));
+            User user = userRepository.findByEmail(email)
+                    .orElseThrow(() -> new RuntimeException("User not found"));
+
+            // Verify project exists and user has access
+            Project project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+            if (!project.getUser().getId().equals(user.getId())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+
+            double duration = videoEditingService.getAudioDuration(projectId, filename);
+            return ResponseEntity.ok(duration);
+
+        } catch (IOException | InterruptedException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(null);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(null);
         }
     }
 
