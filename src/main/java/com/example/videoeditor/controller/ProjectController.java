@@ -1,5 +1,6 @@
 package com.example.videoeditor.controller;
 
+import com.example.videoeditor.PathConfig;
 import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
@@ -1097,7 +1098,7 @@ public class ProjectController {
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
             // Check if the file is in the elements directory first (global access)
-            String elementsDirectory = "/Users/nimitpatel/Desktop/VideoEditor 2/elements/";
+            String elementsDirectory = PathConfig.AbsolutePathElements;
             Path elementsPath = Paths.get(elementsDirectory).resolve(filename).normalize();
             Resource resource = new UrlResource(elementsPath.toUri());
 

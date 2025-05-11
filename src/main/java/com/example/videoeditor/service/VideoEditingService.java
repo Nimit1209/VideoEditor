@@ -1,5 +1,6 @@
 package com.example.videoeditor.service;
 
+import com.example.videoeditor.PathConfig;
 import com.example.videoeditor.developer.entity.GlobalElement;
 import com.example.videoeditor.developer.repository.GlobalElementRepository;
 import com.example.videoeditor.dto.*;
@@ -25,6 +26,7 @@ import java.awt.font.TextLayout;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
 import java.time.LocalDateTime;
@@ -40,18 +42,21 @@ public class VideoEditingService {
     private final Map<String, EditSession> activeSessions;
     private final GlobalElementRepository globalElementRepository;
 
-    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
-    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
-    private String globalElementsDirectory= "elements/";
+    private final PathConfig pathConfig; // Add PathConfig field
+
+//    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
+//    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
+//    private String globalElementsDirectory= "elements/";
 
 
     public VideoEditingService(ProjectRepository projectRepository, ObjectMapper objectMapper,
                                Map<String, EditSession> activeSessions,
-                               GlobalElementRepository globalElementRepository) {
+                               GlobalElementRepository globalElementRepository, PathConfig pathConfig) {
         this.projectRepository = projectRepository;
         this.objectMapper = objectMapper;
         this.activeSessions = activeSessions;
         this.globalElementRepository = globalElementRepository;
+        this.pathConfig = pathConfig;
     }
 
 
@@ -341,7 +346,7 @@ public class VideoEditingService {
         if (createAudioSegment) {
             String videoFileName = new File(videoPath).getName();
             String audioFileName = "extracted_" + videoFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".mp3";
-            File projectAudioDir = new File(baseDir, "audio/projects/" + session.getProjectId() + "/extracted");
+            File projectAudioDir = new File(PathConfig.baseDir, "audio/projects/" + session.getProjectId() + "/extracted");
             File audioFile = new File(projectAudioDir, audioFileName);
 
             List<Map<String, String>> extractedAudio = getExtractedAudio(project);
@@ -441,13 +446,13 @@ public class VideoEditingService {
     }
 
     private Map<String, String> extractAudioFromVideo(String videoPath, Long projectId, String audioFileName) throws IOException, InterruptedException {
-        File videoFile = new File(baseDir, "videos/" + videoPath);
+        File videoFile = new File(PathConfig.baseDir, "videos/" + videoPath);
         if (!videoFile.exists()) {
             throw new IOException("Video file not found: " + videoFile.getAbsolutePath());
         }
 
         // Store audio in project-specific extracted folder
-        File audioDir = new File(baseDir, "audio/projects/" + projectId + "/extracted");
+        File audioDir = new File(PathConfig.baseDir, "audio/projects/" + projectId + "/extracted");
         if (!audioDir.exists()) {
             audioDir.mkdirs();
         }
@@ -458,7 +463,7 @@ public class VideoEditingService {
         File audioFile = new File(audioDir, cleanAudioFileName);
 
         List<String> command = new ArrayList<>();
-        command.add(ffmpegPath);
+        command.add(PathConfig.ffmpegPath);
         command.add("-i");
         command.add(videoFile.getAbsolutePath());
         command.add("-vn"); // No video
@@ -489,9 +494,9 @@ public class VideoEditingService {
     }
 
     private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
-        String fullPath = baseDir + "/videos/" + videoPath;
+        String fullPath = PathConfig.baseDir + "/videos/" + videoPath;
         ProcessBuilder builder = new ProcessBuilder(
-                ffmpegPath, "-i", fullPath
+                PathConfig.ffmpegPath, "-i", fullPath
         );
         builder.redirectErrorStream(true);
         Process process = builder.start();
@@ -886,7 +891,7 @@ public class VideoEditingService {
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectAudioDir = new File(baseDir, "audio/projects/" + projectId);
+        File projectAudioDir = new File(PathConfig.baseDir, "audio/projects/" + projectId);
         if (!projectAudioDir.exists()) {
             projectAudioDir.mkdirs();
         }
@@ -993,7 +998,7 @@ public class VideoEditingService {
         EditSession session = getSession(sessionId);
         TimelineState timelineState = session.getTimelineState();
 
-        File audioFile = new File(baseDir, audioPath);
+        File audioFile = new File(PathConfig.baseDir, audioPath);
         if (!audioFile.exists()) {
             throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
@@ -1203,12 +1208,12 @@ public class VideoEditingService {
     }
 
     private double getAudioDuration(String audioPath) throws IOException, InterruptedException {
-        File audioFile = new File(baseDir, audioPath);
+        File audioFile = new File(PathConfig.baseDir, audioPath);
         if (!audioFile.exists()) {
             throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
 
-        ProcessBuilder builder = new ProcessBuilder(ffmpegPath, "-i", audioFile.getAbsolutePath());
+        ProcessBuilder builder = new ProcessBuilder(PathConfig.ffmpegPath, "-i", audioFile.getAbsolutePath());
         builder.redirectErrorStream(true);
         Process process = builder.start();
 
@@ -1245,7 +1250,7 @@ public class VideoEditingService {
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectImageDir = new File(baseDir, "images/projects/" + projectId);
+        File projectImageDir = new File(PathConfig.baseDir, "images/projects/" + projectId);
         if (!projectImageDir.exists()) {
             projectImageDir.mkdirs();
         }
@@ -1302,7 +1307,7 @@ public class VideoEditingService {
             String imagePathFromJson = jsonData.get("imagePath"); // e.g., elements/filename.png
 
             // Construct absolute path for file access
-            imagePath = globalElementsDirectory + imageFileName; // e.g., /Users/nimitpatel/Desktop/VideoEditor 2/elements/filename.png
+            imagePath = PathConfig.globalElementsDirectory + imageFileName; // e.g., /Users/nimitpatel/Desktop/VideoEditor 2/elements/filename.png
             File imageFile = new File(imagePath);
             if (!imageFile.exists()) {
                 throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
@@ -1385,7 +1390,7 @@ public class VideoEditingService {
         imageSegment.setCropT(0.0);
 
         try {
-            File imageFile = new File(baseDir, imagePath);
+            File imageFile = new File(PathConfig.baseDir, imagePath);
             if (!imageFile.exists()) {
                 throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
             }
@@ -1729,25 +1734,25 @@ public class VideoEditingService {
 
     public void deleteProjectFiles(Long projectId) throws IOException {
         // Delete videos
-        File videoDir = new File(baseDir, "videos/projects/" + projectId);
+        File videoDir = new File(PathConfig.baseDir, "videos/projects/" + projectId);
         if (videoDir.exists()) {
             FileUtils.deleteDirectory(videoDir);
         }
 
         // Delete audio and waveform JSON
-        File audioDir = new File(baseDir, "audio/projects/" + projectId);
+        File audioDir = new File(PathConfig.baseDir, "audio/projects/" + projectId);
         if (audioDir.exists()) {
             FileUtils.deleteDirectory(audioDir);
         }
 
         // Delete images
-        File imageDir = new File(baseDir, "images/projects/" + projectId);
+        File imageDir = new File(PathConfig.baseDir, "images/projects/" + projectId);
         if (imageDir.exists()) {
             FileUtils.deleteDirectory(imageDir);
         }
 
         // Delete exported videos
-        File exportDir = new File(baseDir, "exports/" + projectId);
+        File exportDir = new File(PathConfig.baseDir, "exports/" + projectId);
         if (exportDir.exists()) {
             FileUtils.deleteDirectory(exportDir);
         }
@@ -2026,13 +2031,13 @@ public class VideoEditingService {
     }
 
     private String generateWaveformImage(String audioPath, Long projectId, String uniqueFileName) throws IOException, InterruptedException {
-        File audioFile = new File(baseDir, audioPath);
+        File audioFile = new File(PathConfig.baseDir, audioPath);
         if (!audioFile.exists()) {
             throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
 
         // Create waveform directory: audio/projects/{projectId}/waveforms/
-        File waveformDir = new File(baseDir, "audio/projects/" + projectId + "/waveforms");
+        File waveformDir = new File(PathConfig.baseDir, "audio/projects/" + projectId + "/waveforms");
         if (!waveformDir.exists()) {
             waveformDir.mkdirs();
         }
@@ -2043,7 +2048,7 @@ public class VideoEditingService {
 
         // FFmpeg command to generate waveform image
         List<String> command = new ArrayList<>();
-        command.add(ffmpegPath);
+        command.add(PathConfig.ffmpegPath);
         command.add("-i");
         command.add(audioFile.getAbsolutePath());
         command.add("-filter_complex");
@@ -2086,7 +2091,7 @@ public class VideoEditingService {
         }
 
         ProcessBuilder builder = new ProcessBuilder(
-                "/usr/local/bin/ffprobe",
+                PathConfig.ffprobepath,
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
@@ -2110,20 +2115,20 @@ public class VideoEditingService {
     }
 
     private String generateAndSaveWaveformJson(String audioPath, Long projectId) throws IOException, InterruptedException {
-        File audioFile = new File(baseDir, audioPath);
+        File audioFile = new File(PathConfig.baseDir, audioPath);
         if (!audioFile.exists()) {
             throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
 
         // Use FFmpeg to extract raw PCM data
-        File tempPcmFile = new File(baseDir, "temp/waveform_" + projectId + "_" + System.currentTimeMillis() + ".pcm");
-        File tempDir = new File(baseDir, "temp");
+        File tempPcmFile = new File(PathConfig.baseDir, "temp/waveform_" + projectId + "_" + System.currentTimeMillis() + ".pcm");
+        File tempDir = new File(PathConfig.baseDir, "temp");
         if (!tempDir.exists()) {
             tempDir.mkdirs();
         }
 
         List<String> command = new ArrayList<>();
-        command.add(ffmpegPath);
+        command.add(PathConfig.ffmpegPath);
         command.add("-i");
         command.add(audioFile.getAbsolutePath());
         command.add("-f");
@@ -2172,7 +2177,7 @@ public class VideoEditingService {
         waveformData.put("peaks", peaks);
 
         // Save to JSON file
-        File waveformDir = new File(baseDir, "audio/projects/" + projectId + "/waveforms");
+        File waveformDir = new File(PathConfig.baseDir, "audio/projects/" + projectId + "/waveforms");
         if (!waveformDir.exists()) {
             waveformDir.mkdirs();
         }
@@ -2253,7 +2258,7 @@ public class VideoEditingService {
         System.out.println("Total video duration: " + totalDuration + " seconds");
 
         List<String> command = new ArrayList<>();
-        command.add(ffmpegPath);
+        command.add(PathConfig.ffmpegPath);
 
         StringBuilder filterComplex = new StringBuilder();
         Map<String, String> videoInputIndices = new HashMap<>();
@@ -2267,7 +2272,7 @@ public class VideoEditingService {
 
         for (VideoSegment vs : timelineState.getSegments()) {
             command.add("-i");
-            command.add(baseDir + "\\videos\\" + vs.getSourceVideoPath());
+            command.add(PathConfig.baseDir + "\\videos\\" + vs.getSourceVideoPath());
             videoInputIndices.put(vs.getId(), String.valueOf(inputCount));
             audioInputIndices.put(vs.getId(), String.valueOf(inputCount));
             inputCount++;
@@ -2277,13 +2282,13 @@ public class VideoEditingService {
             command.add("-loop");
             command.add("1");
             command.add("-i");
-            command.add(baseDir + "\\" + is.getImagePath());
+            command.add(PathConfig.baseDir + "\\" + is.getImagePath());
             videoInputIndices.put(is.getId(), String.valueOf(inputCount++));
         }
 
         for (AudioSegment as : timelineState.getAudioSegments()) {
             command.add("-i");
-            command.add(baseDir + "\\" + as.getAudioPath());
+            command.add(PathConfig.baseDir + "\\" + as.getAudioPath());
             audioInputIndices.put(as.getId(), String.valueOf(inputCount++));
         }
 

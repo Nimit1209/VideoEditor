@@ -1,5 +1,6 @@
 package com.example.videoeditor.service;
 
+import com.example.videoeditor.PathConfig;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.entity.Video;
 import com.example.videoeditor.repository.VideoRepository;
@@ -17,11 +18,11 @@ import java.util.List;
 @Service
 public class VideoService {
     private final VideoRepository videoRepository;
-    private final String uploadDir = "/Users/nimitpatel/Desktop/VideoEditor 2/videos/";
+//    private final String uploadDir = "/Users/nimitpatel/Desktop/VideoEditor 2/videos/";
 
     public VideoService(VideoRepository videoRepository) {
         this.videoRepository = videoRepository;
-        new File(uploadDir).mkdirs();
+        new File(PathConfig.uploadDir).mkdirs();
     }
 
     public List<Video> uploadVideos(MultipartFile[] files, String[] titles, User user) throws IOException {
@@ -32,7 +33,7 @@ public class VideoService {
             String title = (titles != null && i < titles.length && titles[i] != null) ? titles[i] : file.getOriginalFilename();
 
             String filename = file.getOriginalFilename();
-            String filePath = uploadDir + filename;
+            String filePath = PathConfig.uploadDir + filename;
             file.transferTo(Paths.get(filePath));
 
             Video video = new Video();
@@ -55,7 +56,7 @@ public class VideoService {
         String fullPath = Paths.get(baseDir, videoPath).toString();
 
         ProcessBuilder builder = new ProcessBuilder(
-                "/usr/local/bin/ffprobe",
+                PathConfig.ffprobepath,
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
