@@ -1,18 +1,19 @@
 package com.example.videoeditor.controller;
 
-import com.example.videoeditor.PathConfig;
 import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.ProjectRepository;
 import com.example.videoeditor.repository.UserRepository;
 import com.example.videoeditor.security.JwtUtil;
+import com.example.videoeditor.service.S3Service;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -34,16 +35,18 @@ public class ProjectController {
     private final ProjectRepository projectRepository;
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
+    private final S3Service s3Service;
 
     public ProjectController(
             VideoEditingService videoEditingService,
             ProjectRepository projectRepository,
             JwtUtil jwtUtil,
-            UserRepository userRepository) {
+            UserRepository userRepository, S3Service s3Service) {
         this.videoEditingService = videoEditingService;
         this.projectRepository = projectRepository;
         this.jwtUtil = jwtUtil;
         this.userRepository = userRepository;
+        this.s3Service = s3Service;
     }
 
     private User getUserFromToken(String token) {
@@ -680,6 +683,7 @@ public class ProjectController {
             response.put("volume", addedAudioSegment.getVolume());
             response.put("audioPath", addedAudioSegment.getAudioPath());
             response.put("waveformJsonPath", addedAudioSegment.getWaveformJsonPath());
+            response.put("isExtracted", addedAudioSegment.isExtracted()); // Include isExtracted
             response.put("keyframes", addedAudioSegment.getKeyframes() != null ? addedAudioSegment.getKeyframes() : new HashMap<>());
 
             return ResponseEntity.ok(response);
@@ -763,6 +767,7 @@ public class ProjectController {
             response.put("volume", updatedAudioSegment.getVolume());
             response.put("audioPath", updatedAudioSegment.getAudioPath());
             response.put("waveformJsonPath", updatedAudioSegment.getWaveformJsonPath());
+            response.put("isExtracted", updatedAudioSegment.isExtracted()); // Include isExtracted
             response.put("keyframes", updatedAudioSegment.getKeyframes() != null ? updatedAudioSegment.getKeyframes() : new HashMap<>());
 
             return ResponseEntity.ok(response);
@@ -783,35 +788,31 @@ public class ProjectController {
         try {
             User user = null;
             if (token != null && !token.isEmpty()) {
-                // Authenticate user if token is provided
                 user = getUserFromToken(token);
             }
 
-            // Verify project exists
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
-            // If token is provided, verify user has access
             if (user != null && !project.getUser().getId().equals(user.getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            // Define waveform file path
-            String waveformDirectory = "audio/projects/" + projectId + "/waveforms/";
-            File waveformFile = new File(waveformDirectory, filename);
+            String s3Key = "audio/projects/" + projectId + "/waveforms/" + filename;
+            File tempFile = s3Service.downloadFile(s3Key);
+            try {
+                Resource resource = new FileSystemResource(tempFile);
+                String contentType = "image/png";
 
-            // Verify file existence
-            if (!waveformFile.exists() || !waveformFile.isFile()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                        .body(resource);
+            } finally {
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
             }
-
-            // Create resource and set content type
-            Resource resource = new FileSystemResource(waveformFile);
-            String contentType = "image/png"; // Waveforms are PNG files
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .body(resource);
         } catch (RuntimeException e) {
             System.err.println("Error serving waveform: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
@@ -821,7 +822,6 @@ public class ProjectController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
-
     @GetMapping("/{projectId}/waveform-json/{filename:.+}")
     public ResponseEntity<Resource> serveWaveformJson(
             @RequestHeader(value = "Authorization", required = false) String token,
@@ -833,31 +833,28 @@ public class ProjectController {
                 user = getUserFromToken(token);
             }
 
-            // Verify project exists
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
-            // If token is provided, verify user has access
             if (user != null && !project.getUser().getId().equals(user.getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            // Define waveform JSON file path
-            String waveformDirectory = "audio/projects/" + projectId + "/waveforms/";
-            File waveformFile = new File(waveformDirectory, filename);
+            String s3Key = "audio/projects/" + projectId + "/waveforms/" + filename;
+            File tempFile = s3Service.downloadFile(s3Key);
+            try {
+                Resource resource = new FileSystemResource(tempFile);
+                String contentType = "application/json";
 
-            // Verify file existence
-            if (!waveformFile.exists() || !waveformFile.isFile()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                        .body(resource);
+            } finally {
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
             }
-
-            // Create resource and set content type
-            Resource resource = new FileSystemResource(waveformFile);
-            String contentType = "application/json";
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .body(resource);
         } catch (RuntimeException e) {
             System.err.println("Error serving waveform JSON: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
@@ -867,7 +864,6 @@ public class ProjectController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
-
     @DeleteMapping("/{projectId}/remove-audio")
     public ResponseEntity<?> removeAudioSegment(
             @RequestHeader("Authorization") String token,
@@ -1089,45 +1085,49 @@ public class ProjectController {
         try {
             User user = null;
             if (token != null && !token.isEmpty()) {
-                // Authenticate user if token is provided
                 user = getUserFromToken(token);
             }
 
-            // Verify project exists
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
-            // Check if the file is in the elements directory first (global access)
-            String elementsDirectory = PathConfig.AbsolutePathElements;
-            Path elementsPath = Paths.get(elementsDirectory).resolve(filename).normalize();
-            Resource resource = new UrlResource(elementsPath.toUri());
-
-            if (resource.exists() && resource.isReadable()) {
-                String contentType = determineContentType(filename);
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .body(resource);
-            }
-
-            // If not in elements, check project-specific images (requires ownership)
             if (user != null && !project.getUser().getId().equals(user.getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            String projectImageDirectory = "images/projects/" + projectId + "/";
-            Path projectImagePath = Paths.get(projectImageDirectory).resolve(filename).normalize();
-            resource = new UrlResource(projectImagePath.toUri());
-
-            if (resource.exists() && resource.isReadable()) {
-                String contentType = determineContentType(filename);
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .body(resource);
+            String s3Key = "images/projects/" + projectId + "/" + filename;
+            File tempFile;
+            try {
+                tempFile = s3Service.downloadFile(s3Key);
+            } catch (Exception e) {
+                // Try elements directory for global elements
+                s3Key = "elements/" + filename;
+                try {
+                    tempFile = s3Service.downloadFile(s3Key);
+                } catch (Exception ex) {
+                    System.err.println("Failed to download image from S3: " + s3Key + ", error: " + ex.getMessage());
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+                }
             }
 
-            // File not found in either location
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            try {
+                Resource resource = new FileSystemResource(tempFile);
+                String contentType = determineContentType(filename);
 
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                        .body(resource);
+            } finally {
+                if (tempFile != null && tempFile.exists()) {
+                    try {
+                        tempFile.delete();
+                        System.out.println("Deleted temporary file: " + tempFile.getAbsolutePath());
+                    } catch (Exception e) {
+                        System.err.println("Failed to delete temporary file " + tempFile.getAbsolutePath() + ": " + e.getMessage());
+                    }
+                }
+            }
         } catch (RuntimeException e) {
             System.err.println("Error serving image: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
@@ -1590,42 +1590,43 @@ public class ProjectController {
         try {
             User user = null;
             if (token != null && !token.isEmpty()) {
-                // Authenticate user if token is provided
                 user = getUserFromToken(token);
             }
 
-            // Verify project exists
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
-            // If token is provided, verify user has access
             if (user != null && !project.getUser().getId().equals(user.getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            // Define possible audio file paths
-            String baseAudioDirectory = "audio/projects/" + projectId + "/";
-            String extractedAudioDirectory = baseAudioDirectory + "extracted/";
-            File audioFile = new File(baseAudioDirectory, filename);
-
-            // Check if file exists in base directory, if not, try extracted directory
-            if (!audioFile.exists() || !audioFile.isFile()) {
-                audioFile = new File(extractedAudioDirectory, filename);
-            }
-
-            // Verify file existence
-            if (!audioFile.exists() || !audioFile.isFile()) {
+            String s3Key = "audio/projects/" + projectId + "/" + filename;
+            File tempFile;
+            try {
+                tempFile = s3Service.downloadFile(s3Key);
+            } catch (Exception e) {
+                System.err.println("Failed to download audio from S3: " + s3Key + ", error: " + e.getMessage());
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
 
-            // Create resource and determine content type
-            Resource resource = new FileSystemResource(audioFile);
-            String contentType = determineAudioContentType(filename);
+            try {
+                Resource resource = new FileSystemResource(tempFile);
+                String contentType = determineContentType(filename);
 
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .body(resource);
-
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                        .body(resource);
+            } finally {
+                if (tempFile != null && tempFile.exists()) {
+                    try {
+                        tempFile.delete();
+                        System.out.println("Deleted temporary file: " + tempFile.getAbsolutePath());
+                    } catch (Exception e) {
+                        System.err.println("Failed to delete temporary file " + tempFile.getAbsolutePath() + ": " + e.getMessage());
+                    }
+                }
+            }
         } catch (RuntimeException e) {
             System.err.println("Error serving audio: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
