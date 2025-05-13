@@ -26,6 +26,7 @@ import java.awt.font.TextLayout;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
@@ -43,20 +44,23 @@ public class VideoEditingService {
     private final GlobalElementRepository globalElementRepository;
 
     private final PathConfig pathConfig; // Add PathConfig field
+    private final S3Service s3Service; // Add S3Service
 
-//    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
-//    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
-//    private String globalElementsDirectory= "elements/";
+
+    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
+    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
+    private String globalElementsDirectory= "elements/";
 
 
     public VideoEditingService(ProjectRepository projectRepository, ObjectMapper objectMapper,
                                Map<String, EditSession> activeSessions,
-                               GlobalElementRepository globalElementRepository, PathConfig pathConfig) {
+                               GlobalElementRepository globalElementRepository, PathConfig pathConfig, S3Service s3Service) {
         this.projectRepository = projectRepository;
         this.objectMapper = objectMapper;
         this.activeSessions = activeSessions;
         this.globalElementRepository = globalElementRepository;
         this.pathConfig = pathConfig;
+        this.s3Service = s3Service;
     }
 
 
@@ -340,13 +344,13 @@ public class VideoEditingService {
 
         Project project = projectRepository.findById(session.getProjectId())
                 .orElseThrow(() -> new RuntimeException("Project not found"));
-        String audioPath;
+        String audioPath = null;
         AudioSegment audioSegment = null;
 
         if (createAudioSegment) {
             String videoFileName = new File(videoPath).getName();
             String audioFileName = "extracted_" + videoFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".mp3";
-            File projectAudioDir = new File(PathConfig.baseDir, "audio/projects/" + session.getProjectId() + "/extracted");
+            File projectAudioDir = new File(baseDir, "audio/projects/" + session.getProjectId() + "/extracted");
             File audioFile = new File(projectAudioDir, audioFileName);
 
             List<Map<String, String>> extractedAudio = getExtractedAudio(project);
@@ -364,38 +368,41 @@ public class VideoEditingService {
                 Map<String, String> extractionResult = extractAudioFromVideo(videoPath, session.getProjectId(), audioFileName);
                 audioPath = extractionResult.get("audioPath");
                 waveformJsonPath = extractionResult.get("waveformJsonPath");
-                System.out.println("Extracted new audio file: " + audioPath + ", waveform: " + waveformJsonPath);
+                System.out.println("Extracted audio file: " + audioPath + ", waveform: " + waveformJsonPath);
             }
 
-            List<Map<String, String>> videos = getVideos(project);
-            boolean videoExists = false;
-            for (Map<String, String> video : videos) {
-                if (video.get("videoPath").equals(videoPath)) {
-                    video.put("audioPath", audioPath);
-                    videoExists = true;
-                    break;
+            // Only create audio segment if audio was successfully extracted
+            if (audioPath != null) {
+                List<Map<String, String>> videos = getVideos(project);
+                boolean videoExists = false;
+                for (Map<String, String> video : videos) {
+                    if (video.get("videoPath").equals(videoPath)) {
+                        video.put("audioPath", audioPath);
+                        videoExists = true;
+                        break;
+                    }
                 }
-            }
-            if (!videoExists) {
-                addVideo(project, videoPath, videoFileName, audioPath);
-            } else {
-                project.setVideosJson(objectMapper.writeValueAsString(videos));
-            }
-            projectRepository.save(project);
+                if (!videoExists) {
+                    addVideo(project, videoPath, videoFileName, audioPath);
+                } else {
+                    project.setVideosJson(objectMapper.writeValueAsString(videos));
+                }
+                projectRepository.save(project);
 
-            audioSegment = new AudioSegment();
-            audioSegment.setAudioPath(audioPath);
-            audioSegment.setWaveformJsonPath(waveformJsonPath);
-            int audioLayer = findAvailableAudioLayer(session.getTimelineState(), timelineStartTime, timelineEndTime);
-            audioSegment.setLayer(audioLayer);
-            audioSegment.setStartTime(startTime);
-            audioSegment.setEndTime(endTime);
-            audioSegment.setTimelineStartTime(timelineStartTime);
-            audioSegment.setTimelineEndTime(timelineEndTime);
-            audioSegment.setVolume(1.0);
-            audioSegment.setExtracted(true); // Set isExtracted to true
-        } else {
-            audioPath = null;
+                audioSegment = new AudioSegment();
+                audioSegment.setAudioPath(audioPath);
+                audioSegment.setWaveformJsonPath(waveformJsonPath);
+                int audioLayer = findAvailableAudioLayer(session.getTimelineState(), timelineStartTime, timelineEndTime);
+                audioSegment.setLayer(audioLayer);
+                audioSegment.setStartTime(startTime);
+                audioSegment.setEndTime(endTime);
+                audioSegment.setTimelineStartTime(timelineStartTime);
+                audioSegment.setTimelineEndTime(timelineEndTime);
+                audioSegment.setVolume(1.0);
+                audioSegment.setExtracted(true);
+            } else {
+                System.out.println("No audio extracted for video: " + videoPath + ", skipping audio segment creation");
+            }
         }
 
         VideoSegment segment = new VideoSegment();
@@ -446,24 +453,78 @@ public class VideoEditingService {
     }
 
     private Map<String, String> extractAudioFromVideo(String videoPath, Long projectId, String audioFileName) throws IOException, InterruptedException {
-        File videoFile = new File(PathConfig.baseDir, "videos/" + videoPath);
+        File videoFile = new File(baseDir, "videos/" + videoPath);
         if (!videoFile.exists()) {
             throw new IOException("Video file not found: " + videoFile.getAbsolutePath());
         }
+        if (!videoFile.canRead()) {
+            throw new IOException("Video file is not readable: " + videoFile.getAbsolutePath());
+        }
 
         // Store audio in project-specific extracted folder
-        File audioDir = new File(PathConfig.baseDir, "audio/projects/" + projectId + "/extracted");
-        if (!audioDir.exists()) {
-            audioDir.mkdirs();
+        File audioDir = new File(baseDir, "audio/projects/" + projectId + "/extracted");
+        if (!audioDir.exists() && !audioDir.mkdirs()) {
+            throw new IOException("Failed to create audio directory: " + audioDir.getAbsolutePath());
         }
 
         String videoFileName = new File(videoPath).getName();
         String baseFileName = videoFileName.substring(0, videoFileName.lastIndexOf('.'));
         String cleanAudioFileName = "extracted_" + baseFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".mp3";
         File audioFile = new File(audioDir, cleanAudioFileName);
+        String relativePath = "audio/projects/" + projectId + "/extracted/" + cleanAudioFileName;
+        String waveformJsonPath = null;
 
+        // Check if audio stream exists using ffprobe
+        List<String> probeCommand = new ArrayList<>();
+        probeCommand.add(ffmpegPath.replace("ffmpeg.exe", "ffprobe.exe"));
+        probeCommand.add("-v");
+        probeCommand.add("error");
+        probeCommand.add("-show_streams");
+        probeCommand.add("-select_streams");
+        probeCommand.add("a");
+        probeCommand.add("-of");
+        probeCommand.add("json");
+        probeCommand.add(videoFile.getAbsolutePath());
+
+        ProcessBuilder probeBuilder = new ProcessBuilder(probeCommand);
+        probeBuilder.redirectErrorStream(true);
+        Process probeProcess = probeBuilder.start();
+        StringBuilder probeOutput = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(probeProcess.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                probeOutput.append(line);
+            }
+        }
+        int probeExitCode = probeProcess.waitFor();
+        if (probeExitCode != 0) {
+            // Log the probe command output for debugging
+            System.err.println("ffprobe command failed: " + String.join(" ", probeCommand));
+            System.err.println("ffprobe output: " + probeOutput.toString());
+            throw new IOException("Failed to probe video for audio streams: " + videoPath + ", ffprobe exit code: " + probeExitCode);
+        }
+
+        // Parse ffprobe output
+        Map<String, Object> probeData;
+        try {
+            probeData = objectMapper.readValue(probeOutput.toString(), new TypeReference<Map<String, Object>>() {});
+        } catch (JsonProcessingException e) {
+            System.err.println("Failed to parse ffprobe output: " + probeOutput.toString());
+            throw new IOException("Invalid ffprobe output for video: " + videoPath, e);
+        }
+        List<Map<String, Object>> streams = (List<Map<String, Object>>) probeData.getOrDefault("streams", new ArrayList<>());
+        if (streams.isEmpty()) {
+            System.out.println("No audio stream found in video: " + videoPath);
+            // Return without extracting audio
+            Map<String, String> result = new HashMap<>();
+            result.put("audioPath", null);
+            result.put("waveformJsonPath", null);
+            return result;
+        }
+
+        // Proceed with audio extraction
         List<String> command = new ArrayList<>();
-        command.add(PathConfig.ffmpegPath);
+        command.add(ffmpegPath);
         command.add("-i");
         command.add(videoFile.getAbsolutePath());
         command.add("-vn"); // No video
@@ -472,18 +533,29 @@ public class VideoEditingService {
         command.add("-y");
         command.add(audioFile.getAbsolutePath());
 
-        executeFFmpegCommand(command);
+        try {
+            executeFFmpegCommand(command);
+        } catch (RuntimeException e) {
+            System.err.println("Audio extraction failed for video: " + videoPath);
+            throw new IOException("Failed to extract audio from video: " + videoPath, e);
+        }
 
-        String relativePath = "audio/projects/" + projectId + "/extracted/" + cleanAudioFileName;
-
-        // Generate and save waveform JSON
-        String waveformJsonPath = generateAndSaveWaveformJson(relativePath, projectId);
+        // Generate and save waveform JSON if audio was extracted
+        if (audioFile.exists()) {
+            waveformJsonPath = generateAndSaveWaveformJson(relativePath, projectId);
+        } else {
+            System.out.println("Audio file was not created: " + audioFile.getAbsolutePath());
+            // Return without waveform if extraction failed
+            Map<String, String> result = new HashMap<>();
+            result.put("audioPath", null);
+            result.put("waveformJsonPath", null);
+            return result;
+        }
 
         // Update project
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
         addExtractedAudio(project, relativePath, cleanAudioFileName, videoPath, waveformJsonPath);
-
         projectRepository.save(project);
 
         // Return audioPath and waveformJsonPath
@@ -493,37 +565,40 @@ public class VideoEditingService {
         return result;
     }
 
-    private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
-        String fullPath = PathConfig.baseDir + "/videos/" + videoPath;
-        ProcessBuilder builder = new ProcessBuilder(
-                PathConfig.ffmpegPath, "-i", fullPath
-        );
-        builder.redirectErrorStream(true);
-        Process process = builder.start();
+    private double getVideoDuration(String videoS3Key) throws IOException, InterruptedException {
+        File videoFile = s3Service.downloadFile(videoS3Key);
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    ffmpegPath, "-i", videoFile.getAbsolutePath()
+            );
+            builder.redirectErrorStream(true);
+            Process process = builder.start();
 
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
             }
-        }
 
-        int exitCode = process.waitFor();
-        String outputStr = output.toString();
-        int durationIndex = outputStr.indexOf("Duration:");
-        if (durationIndex >= 0) {
-            String durationStr = outputStr.substring(durationIndex + 10, outputStr.indexOf(",", durationIndex)).trim();
-            String[] parts = durationStr.split(":");
-            if (parts.length == 3) {
-                double hours = Double.parseDouble(parts[0]);
-                double minutes = Double.parseDouble(parts[1]);
-                double seconds = Double.parseDouble(parts[2]);
-                // MODIFIED: Round duration to three decimal places
-                return roundToThreeDecimals(hours * 3600 + minutes * 60 + seconds);
+            int exitCode = process.waitFor();
+            String outputStr = output.toString();
+            int durationIndex = outputStr.indexOf("Duration:");
+            if (durationIndex >= 0) {
+                String durationStr = outputStr.substring(durationIndex + 10, outputStr.indexOf(",", durationIndex)).trim();
+                String[] parts = durationStr.split(":");
+                if (parts.length == 3) {
+                    double hours = Double.parseDouble(parts[0]);
+                    double minutes = Double.parseDouble(parts[1]);
+                    double seconds = Double.parseDouble(parts[2]);
+                    return roundToThreeDecimals(hours * 3600 + minutes * 60 + seconds);
+                }
             }
+            return 300; // Default to 5 minutes
+        } finally {
+            videoFile.delete();
         }
-        return 300; // Default to 5 minutes
     }
 
     public void updateVideoSegment(
@@ -891,7 +966,7 @@ public class VideoEditingService {
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectAudioDir = new File(PathConfig.baseDir, "audio/projects/" + projectId);
+        File projectAudioDir = new File(baseDir, "audio/projects/" + projectId);
         if (!projectAudioDir.exists()) {
             projectAudioDir.mkdirs();
         }
@@ -903,16 +978,15 @@ public class VideoEditingService {
                     ? audioFileNames[i]
                     : projectId + "_" + System.currentTimeMillis() + "_" + originalFileName;
 
-            File destinationFile = new File(projectAudioDir, uniqueFileName);
-            audioFile.transferTo(destinationFile);
-
-            String relativePath = "audio/projects/" + projectId + "/" + uniqueFileName;
+            // Upload to S3
+            String s3Key = "audio/projects/" + projectId + "/" + uniqueFileName;
+            s3Service.uploadFile(s3Key, audioFile);
 
             // Generate and save waveform JSON
-            String waveformJsonPath = generateAndSaveWaveformJson(relativePath, projectId);
+            String waveformJsonPath = generateAndSaveWaveformJson(s3Key, projectId);
 
             try {
-                addAudio(project, relativePath, uniqueFileName, waveformJsonPath);
+                addAudio(project, s3Key, uniqueFileName, waveformJsonPath);
             } catch (JsonProcessingException e) {
                 throw new IOException("Failed to process audio data for file: " + uniqueFileName, e);
             }
@@ -944,6 +1018,7 @@ public class VideoEditingService {
         }
 
         String audioPath = null;
+        boolean isExtracted = false;
 
         // First, try to find the audio in audioJson
         List<Map<String, String>> audioFiles = getAudio(project);
@@ -970,6 +1045,7 @@ public class VideoEditingService {
                     .findFirst()
                     .orElseThrow(() -> new RuntimeException("No audio found with filename: " + audioFileName));
             audioPath = extractedAudio.get("audioPath");
+            isExtracted = true; // Set isExtracted to true for extracted audio
         }
 
         // Round time fields to three decimal places
@@ -980,7 +1056,7 @@ public class VideoEditingService {
         double calculatedTimelineEndTime = timelineEndTime != null ? roundToThreeDecimals(timelineEndTime) :
                 roundToThreeDecimals(timelineStartTime + (calculatedEndTime - startTime));
 
-        addAudioToTimeline(sessionId, audioPath, layer, startTime, calculatedEndTime, timelineStartTime, calculatedTimelineEndTime);
+        addAudioToTimeline(sessionId, audioPath, layer, startTime, calculatedEndTime, timelineStartTime, calculatedTimelineEndTime, isExtracted);
     }
 
     public void addAudioToTimeline(
@@ -990,7 +1066,8 @@ public class VideoEditingService {
             double startTime,
             double endTime,
             double timelineStartTime,
-            Double timelineEndTime) throws IOException, InterruptedException {
+            Double timelineEndTime,
+            boolean isExtracted) throws IOException, InterruptedException {
         if (layer >= 0) {
             throw new RuntimeException("Audio layers must be negative (e.g., -1, -2, -3)");
         }
@@ -998,7 +1075,7 @@ public class VideoEditingService {
         EditSession session = getSession(sessionId);
         TimelineState timelineState = session.getTimelineState();
 
-        File audioFile = new File(PathConfig.baseDir, audioPath);
+        File audioFile = new File(baseDir, audioPath);
         if (!audioFile.exists()) {
             throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
@@ -1026,6 +1103,7 @@ public class VideoEditingService {
         audioSegment.setTimelineEndTime(timelineEndTime);
         audioSegment.setVolume(1.0);
         audioSegment.setExtracted(false);
+        audioSegment.setExtracted(isExtracted); // Set isExtracted based on parameter
 
         // Retrieve waveformJsonPath from audioJson or extractedAudioJson
         Project project = projectRepository.findById(session.getProjectId())
@@ -1101,6 +1179,9 @@ public class VideoEditingService {
         boolean timelineChanged = false;
         if (timelineStartTime != null) {
             timelineStartTime = roundToThreeDecimals(timelineStartTime);
+            if (timelineStartTime < 0) {
+                throw new RuntimeException("Timeline start time cannot be negative");
+            }
             targetSegment.setTimelineStartTime(timelineStartTime);
             timelineChanged = true;
         }
@@ -1119,58 +1200,50 @@ public class VideoEditingService {
         }
 
         if (startTime != null || endTime != null || timelineChanged) {
+            double newStartTime = startTime != null ? roundToThreeDecimals(startTime) : originalStartTime;
+            double newEndTime = endTime != null ? roundToThreeDecimals(endTime) : originalEndTime;
+
+            // Validate startTime and endTime
             if (startTime != null) {
-                startTime = roundToThreeDecimals(startTime);
-                if (startTime < 0 || startTime >= audioDuration) {
-                    throw new RuntimeException("Start time out of bounds");
+                if (newStartTime < 0 || newStartTime >= audioDuration) {
+                    throw new RuntimeException("Start time out of bounds: " + newStartTime);
                 }
-                targetSegment.setStartTime(startTime);
+                targetSegment.setStartTime(newStartTime);
             }
             if (endTime != null) {
-                endTime = roundToThreeDecimals(endTime);
-                if (endTime <= targetSegment.getStartTime() || endTime > audioDuration) {
-                    throw new RuntimeException("End time out of bounds");
+                if (newEndTime <= newStartTime || newEndTime > audioDuration) {
+                    throw new RuntimeException("End time out of bounds: " + newEndTime + ", audioDuration: " + audioDuration);
                 }
-                targetSegment.setEndTime(endTime);
+                targetSegment.setEndTime(newEndTime);
             }
 
-            if (!timelineChanged) {
-                double newStartTime = startTime != null ? startTime : originalStartTime;
-                double newEndTime = endTime != null ? endTime : originalEndTime;
-
-                if (startTime != null && timelineStartTime == null) {
+            // Adjust timeline times based on audio clip duration
+            double clipDuration = roundToThreeDecimals(targetSegment.getEndTime() - targetSegment.getStartTime());
+            if (timelineChanged) {
+                // If timeline times are provided, validate them
+                double providedTimelineDuration = roundToThreeDecimals(targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime());
+                if (Math.abs(providedTimelineDuration - clipDuration) > 0.001) {
+                    // Adjust timelineEndTime to match clip duration
+                    targetSegment.setTimelineEndTime(roundToThreeDecimals(targetSegment.getTimelineStartTime() + clipDuration));
+                }
+            } else {
+                // If timeline times are not provided, derive them from audio times
+                if (startTime != null) {
                     double startTimeShift = newStartTime - originalStartTime;
-                    targetSegment.setTimelineStartTime(originalTimelineStartTime + startTimeShift);
+                    targetSegment.setTimelineStartTime(roundToThreeDecimals(originalTimelineStartTime + startTimeShift));
                 }
-                if (endTime != null && timelineEndTime == null) {
-                    double audioDurationUsed = newEndTime - targetSegment.getStartTime();
-                    targetSegment.setTimelineEndTime(targetSegment.getTimelineStartTime() + audioDurationUsed);
-                }
-            } else if (startTime == null && endTime == null) {
-                double newTimelineDuration = roundToThreeDecimals(targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime());
-                double originalTimelineDuration = roundToThreeDecimals(originalTimelineEndTime - originalTimelineStartTime);
-                double originalAudioDuration = roundToThreeDecimals(originalEndTime - originalStartTime);
-
-                if (newTimelineDuration != originalTimelineDuration) {
-                    double timelineShift = targetSegment.getTimelineStartTime() - originalTimelineStartTime;
-                    double newStartTime = roundToThreeDecimals(originalStartTime + timelineShift);
-                    if (newStartTime < 0) newStartTime = 0;
-                    double newEndTime = roundToThreeDecimals(newStartTime + Math.min(newTimelineDuration, originalAudioDuration));
-                    if (newEndTime > audioDuration) {
-                        newEndTime = roundToThreeDecimals(audioDuration);
-                        newStartTime = roundToThreeDecimals(newEndTime - newTimelineDuration);
-                    }
-                    targetSegment.setStartTime(newStartTime);
-                    targetSegment.setEndTime(newEndTime);
-                }
+                targetSegment.setTimelineEndTime(roundToThreeDecimals(targetSegment.getTimelineStartTime() + clipDuration));
             }
         }
 
-        // Ensure timeline duration reflects rounded values
+        // Final validation
         double newTimelineDuration = roundToThreeDecimals(targetSegment.getTimelineEndTime() - targetSegment.getTimelineStartTime());
         double newClipDuration = roundToThreeDecimals(targetSegment.getEndTime() - targetSegment.getStartTime());
-        if (newTimelineDuration < newClipDuration) {
-            targetSegment.setTimelineEndTime(roundToThreeDecimals(targetSegment.getTimelineStartTime() + newClipDuration));
+        if (Math.abs(newTimelineDuration - newClipDuration) > 0.001) {
+            throw new RuntimeException("Timeline duration (" + newTimelineDuration + ") does not match clip duration (" + newClipDuration + ")");
+        }
+        if (newTimelineDuration <= 0) {
+            throw new RuntimeException("Invalid timeline duration: " + newTimelineDuration);
         }
 
         timelineState.getAudioSegments().remove(targetSegment);
@@ -1208,12 +1281,12 @@ public class VideoEditingService {
     }
 
     private double getAudioDuration(String audioPath) throws IOException, InterruptedException {
-        File audioFile = new File(PathConfig.baseDir, audioPath);
+        File audioFile = new File(baseDir, audioPath);
         if (!audioFile.exists()) {
             throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
 
-        ProcessBuilder builder = new ProcessBuilder(PathConfig.ffmpegPath, "-i", audioFile.getAbsolutePath());
+        ProcessBuilder builder = new ProcessBuilder(ffmpegPath, "-i", audioFile.getAbsolutePath());
         builder.redirectErrorStream(true);
         Process process = builder.start();
 
@@ -1250,7 +1323,7 @@ public class VideoEditingService {
             throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        File projectImageDir = new File(PathConfig.baseDir, "images/projects/" + projectId);
+        File projectImageDir = new File(baseDir, "images/projects/" + projectId);
         if (!projectImageDir.exists()) {
             projectImageDir.mkdirs();
         }
@@ -1264,14 +1337,12 @@ public class VideoEditingService {
                     ? imageFileNames[i]
                     : projectId + "_" + System.currentTimeMillis() + "_" + originalFileName;
 
-            File destinationFile = new File(projectImageDir, uniqueFileName);
-            imageFile.transferTo(destinationFile);
-
-            String relativePath = "images/projects/" + projectId + "/" + uniqueFileName;
-            relativePaths.add(relativePath);
+            // Upload to S3
+            String s3Key = "images/projects/" + projectId + "/" + uniqueFileName;
+            s3Service.uploadFile(s3Key, imageFile);
 
             try {
-                addImage(project, relativePath, uniqueFileName);
+                addImage(project, s3Key, uniqueFileName);
             } catch (JsonProcessingException e) {
                 throw new IOException("Failed to process image data for file: " + uniqueFileName, e);
             }
@@ -1295,30 +1366,29 @@ public class VideoEditingService {
         String imagePath;
 
         if (isElement) {
-            // Handle global element
             GlobalElement globalElement = globalElementRepository.findByFileName(imageFileName)
                     .orElseThrow(() -> new RuntimeException("Global element not found with filename: " + imageFileName));
-
-            // Parse globalElement_json to get imagePath
             Map<String, String> jsonData = objectMapper.readValue(
                     globalElement.getGlobalElementJson(),
                     new TypeReference<Map<String, String>>() {}
             );
             String imagePathFromJson = jsonData.get("imagePath"); // e.g., elements/filename.png
-
-            // Construct absolute path for file access
-            imagePath = PathConfig.globalElementsDirectory + imageFileName; // e.g., /Users/nimitpatel/Desktop/VideoEditor 2/elements/filename.png
-            File imageFile = new File(imagePath);
-            if (!imageFile.exists()) {
-                throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
+            File imageFile = s3Service.downloadFile(imagePathFromJson);
+            try {
+                // Validate file
+                if (!imageFile.exists()) {
+                    throw new RuntimeException("Image file does not exist in S3: " + imagePathFromJson);
+                }
+                Project project = projectRepository.findById(projectId)
+                        .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+                if (!project.getUser().getId().equals(user.getId())) {
+                    throw new RuntimeException("Unauthorized to modify this project");
+                }
+                addElement(project, imagePathFromJson, imageFileName);
+                imagePath = imagePathFromJson;
+            } finally {
+                imageFile.delete();
             }
-
-            Project project = projectRepository.findById(projectId)
-                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
-            if (!project.getUser().getId().equals(user.getId())) {
-                throw new RuntimeException("Unauthorized to modify this project");
-            }
-            addElement(project, imagePathFromJson, imageFileName); // Store in element_json
         } else {
             // Handle project image
             Project project = projectRepository.findById(projectId)
@@ -1390,7 +1460,7 @@ public class VideoEditingService {
         imageSegment.setCropT(0.0);
 
         try {
-            File imageFile = new File(PathConfig.baseDir, imagePath);
+            File imageFile = new File(baseDir, imagePath);
             if (!imageFile.exists()) {
                 throw new RuntimeException("Image file does not exist: " + imageFile.getAbsolutePath());
             }
@@ -1733,28 +1803,38 @@ public class VideoEditingService {
     }
 
     public void deleteProjectFiles(Long projectId) throws IOException {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+
         // Delete videos
-        File videoDir = new File(PathConfig.baseDir, "videos/projects/" + projectId);
-        if (videoDir.exists()) {
-            FileUtils.deleteDirectory(videoDir);
+        for (Map<String, String> video : getVideos(project)) {
+            s3Service.deleteFile(video.get("videoPath"));
         }
 
         // Delete audio and waveform JSON
-        File audioDir = new File(PathConfig.baseDir, "audio/projects/" + projectId);
-        if (audioDir.exists()) {
-            FileUtils.deleteDirectory(audioDir);
+        for (Map<String, String> audio : getAudio(project)) {
+            s3Service.deleteFile(audio.get("audioPath"));
+            String waveformJsonPath = audio.get("waveformJsonPath");
+            if (waveformJsonPath != null) {
+                s3Service.deleteFile(waveformJsonPath);
+            }
+        }
+        for (Map<String, String> extractedAudio : getExtractedAudio(project)) {
+            s3Service.deleteFile(extractedAudio.get("audioPath"));
+            String waveformJsonPath = extractedAudio.get("waveformJsonPath");
+            if (waveformJsonPath != null) {
+                s3Service.deleteFile(waveformJsonPath);
+            }
         }
 
         // Delete images
-        File imageDir = new File(PathConfig.baseDir, "images/projects/" + projectId);
-        if (imageDir.exists()) {
-            FileUtils.deleteDirectory(imageDir);
+        for (Map<String, String> image : getImages(project)) {
+            s3Service.deleteFile(image.get("imagePath"));
         }
 
         // Delete exported videos
-        File exportDir = new File(PathConfig.baseDir, "exports/" + projectId);
-        if (exportDir.exists()) {
-            FileUtils.deleteDirectory(exportDir);
+        if (project.getExportedVideoPath() != null) {
+            s3Service.deleteFile(project.getExportedVideoPath());
         }
     }
 
@@ -2030,44 +2110,45 @@ public class VideoEditingService {
         session.setLastAccessTime(System.currentTimeMillis());
     }
 
-    private String generateWaveformImage(String audioPath, Long projectId, String uniqueFileName) throws IOException, InterruptedException {
-        File audioFile = new File(PathConfig.baseDir, audioPath);
-        if (!audioFile.exists()) {
-            throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
+    private String generateWaveformImage(String audioS3Key, Long projectId, String uniqueFileName) throws IOException, InterruptedException {
+        // Download audio from S3
+        File audioFile = s3Service.downloadFile(audioS3Key);
+        try {
+            // Generate waveform filename
+            String waveformFileName = "waveform_" + uniqueFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".png";
+            File tempWaveformFile = Files.createTempFile("waveform_", waveformFileName).toFile();
+
+            // FFmpeg command to generate waveform image
+            List<String> command = new ArrayList<>();
+            command.add(ffmpegPath);
+            command.add("-i");
+            command.add(audioFile.getAbsolutePath());
+            command.add("-filter_complex");
+            command.add(
+                    "[0:a]showwavespic=s=1920x120:colors=0x00FFFF@1.0|0xFFFFFF@0.8:split_channels=0,format=rgba[w];" +
+                            "color=s=1920x120:c=0x1E2A44@1.0,format=rgba[bg];" +
+                            "[bg][w]overlay=0:0:format=rgb,format=rgba"
+            );
+            command.add("-frames:v");
+            command.add("1");
+            command.add("-y");
+            command.add(tempWaveformFile.getAbsolutePath());
+
+            executeFFmpegCommand(command);
+
+            // Upload to S3
+            String waveformS3Key = "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
+            s3Service.uploadFile(waveformS3Key, tempWaveformFile);
+
+            try {
+                return waveformS3Key;
+            } finally {
+                tempWaveformFile.delete();
+            }
+        } finally {
+            audioFile.delete();
         }
-
-        // Create waveform directory: audio/projects/{projectId}/waveforms/
-        File waveformDir = new File(PathConfig.baseDir, "audio/projects/" + projectId + "/waveforms");
-        if (!waveformDir.exists()) {
-            waveformDir.mkdirs();
-        }
-
-        // Generate waveform filename based on audio filename
-        String waveformFileName = "waveform_" + uniqueFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".png";
-        File waveformFile = new File(waveformDir, waveformFileName);
-
-        // FFmpeg command to generate waveform image
-        List<String> command = new ArrayList<>();
-        command.add(PathConfig.ffmpegPath);
-        command.add("-i");
-        command.add(audioFile.getAbsolutePath());
-        command.add("-filter_complex");
-        command.add(
-                "[0:a]showwavespic=s=1920x120:colors=0x00FFFF@1.0|0xFFFFFF@0.8:split_channels=0,format=rgba[w];" + // Waveform with cyan and white, semi-transparent
-                        "color=s=1920x120:c=0x1E2A44@1.0,format=rgba[bg];" + // Solid dark blue-gray background
-                        "[bg][w]overlay=0:0:format=rgb,format=rgba" // Overlay waveform on background
-        );
-        command.add("-frames:v");
-        command.add("1");
-        command.add("-y"); // Overwrite output file if exists
-        command.add(waveformFile.getAbsolutePath());
-
-        executeFFmpegCommand(command);
-
-        // Return relative path
-        return "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
     }
-
     public double getAudioDuration(Long projectId, String filename) throws IOException, InterruptedException {
         String baseDir = System.getProperty("user.dir");
         // Define both possible paths
@@ -2091,7 +2172,7 @@ public class VideoEditingService {
         }
 
         ProcessBuilder builder = new ProcessBuilder(
-                PathConfig.ffprobepath,
+                "C:\\Users\\raj.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffprobe.exe",
                 "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
@@ -2114,79 +2195,80 @@ public class VideoEditingService {
         return Double.parseDouble(duration);
     }
 
-    private String generateAndSaveWaveformJson(String audioPath, Long projectId) throws IOException, InterruptedException {
-        File audioFile = new File(PathConfig.baseDir, audioPath);
-        if (!audioFile.exists()) {
-            throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
-        }
+    private String generateAndSaveWaveformJson(String audioS3Key, Long projectId) throws IOException, InterruptedException {
+        // Download audio from S3
+        File audioFile = s3Service.downloadFile(audioS3Key);
+        try {
+            // Create temporary PCM file
+            File tempPcmFile = Files.createTempFile("waveform_", ".pcm").toFile();
+            try {
+                List<String> command = new ArrayList<>();
+                command.add(ffmpegPath);
+                command.add("-i");
+                command.add(audioFile.getAbsolutePath());
+                command.add("-f");
+                command.add("s16le");
+                command.add("-ac");
+                command.add("1");
+                command.add("-ar");
+                command.add("44100");
+                command.add("-y");
+                command.add(tempPcmFile.getAbsolutePath());
 
-        // Use FFmpeg to extract raw PCM data
-        File tempPcmFile = new File(PathConfig.baseDir, "temp/waveform_" + projectId + "_" + System.currentTimeMillis() + ".pcm");
-        File tempDir = new File(PathConfig.baseDir, "temp");
-        if (!tempDir.exists()) {
-            tempDir.mkdirs();
-        }
+                executeFFmpegCommand(command);
 
-        List<String> command = new ArrayList<>();
-        command.add(PathConfig.ffmpegPath);
-        command.add("-i");
-        command.add(audioFile.getAbsolutePath());
-        command.add("-f");
-        command.add("s16le"); // 16-bit PCM
-        command.add("-ac");
-        command.add("1"); // Mono
-        command.add("-ar");
-        command.add("44100"); // Sample rate
-        command.add("-y");
-        command.add(tempPcmFile.getAbsolutePath());
+                // Read PCM data and compute amplitude peaks
+                List<Float> peaks = new ArrayList<>();
+                try (FileInputStream fis = new FileInputStream(tempPcmFile)) {
+                    byte[] buffer = new byte[4096];
+                    int samplesPerPeak = 44100 / 100;
+                    int sampleCount = 0;
+                    float maxAmplitude = 0;
 
-        executeFFmpegCommand(command);
+                    while (fis.read(buffer) != -1) {
+                        for (int i = 0; i < buffer.length; i += 2) {
+                            short sample = (short) ((buffer[i] & 0xFF) | (buffer[i + 1] << 8));
+                            float amplitude = Math.abs(sample / 32768.0f);
+                            maxAmplitude = Math.max(maxAmplitude, amplitude);
+                            sampleCount++;
 
-        // Read PCM data and compute amplitude peaks
-        List<Float> peaks = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(tempPcmFile)) {
-            byte[] buffer = new byte[4096]; // Read 4KB at a time
-            int samplesPerPeak = 44100 / 100; // Aim for ~100 peaks per second
-            int sampleCount = 0;
-            float maxAmplitude = 0;
-
-            while (fis.read(buffer) != -1) {
-                for (int i = 0; i < buffer.length; i += 2) {
-                    short sample = (short) ((buffer[i] & 0xFF) | (buffer[i + 1] << 8));
-                    float amplitude = Math.abs(sample / 32768.0f); // Normalize to 0-1
-                    maxAmplitude = Math.max(maxAmplitude, amplitude);
-                    sampleCount++;
-
-                    if (sampleCount >= samplesPerPeak) {
+                            if (sampleCount >= samplesPerPeak) {
+                                peaks.add(maxAmplitude);
+                                maxAmplitude = 0;
+                                sampleCount = 0;
+                            }
+                        }
+                    }
+                    if (sampleCount > 0) {
                         peaks.add(maxAmplitude);
-                        maxAmplitude = 0;
-                        sampleCount = 0;
                     }
                 }
-            }
-            if (sampleCount > 0) {
-                peaks.add(maxAmplitude);
+
+                // Create JSON structure
+                Map<String, Object> waveformData = new HashMap<>();
+                waveformData.put("sampleRate", 100);
+                waveformData.put("peaks", peaks);
+
+                // Save to temporary JSON file
+                File tempJsonFile = Files.createTempFile("waveform_", ".json").toFile();
+                try {
+                    objectMapper.writeValue(tempJsonFile, waveformData);
+
+                    // Upload to S3
+                    String waveformFileName = "waveform_" + new File(audioS3Key).getName().replaceAll("[^a-zA-Z0-9.]", "_") + ".json";
+                    String waveformS3Key = "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
+                    s3Service.uploadFile(waveformS3Key, tempJsonFile);
+
+                    return waveformS3Key;
+                } finally {
+                    tempJsonFile.delete();
+                }
+            } finally {
+                tempPcmFile.delete();
             }
         } finally {
-            tempPcmFile.delete(); // Clean up
+            audioFile.delete();
         }
-
-        // Create JSON structure
-        Map<String, Object> waveformData = new HashMap<>();
-        waveformData.put("sampleRate", 100);
-        waveformData.put("peaks", peaks);
-
-        // Save to JSON file
-        File waveformDir = new File(PathConfig.baseDir, "audio/projects/" + projectId + "/waveforms");
-        if (!waveformDir.exists()) {
-            waveformDir.mkdirs();
-        }
-        String waveformFileName = "waveform_" + audioFile.getName().replaceAll("[^a-zA-Z0-9.]", "_") + ".json";
-        File waveformFile = new File(waveformDir, waveformFileName);
-        objectMapper.writeValue(waveformFile, waveformData);
-
-        // Return relative path
-        return "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
     }
 
     public File exportProject(String sessionId) throws IOException, InterruptedException {
@@ -2235,15 +2317,12 @@ public class VideoEditingService {
         return new File(exportedVideoPath);
     }
 
-    private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight, Float fps)
+    private String renderFinalVideo(TimelineState timelineState, String outputS3Key, int canvasWidth, int canvasHeight, Float fps)
             throws IOException, InterruptedException {
-        System.out.println("Rendering final video to: " + outputPath);
+        System.out.println("Rendering final video to S3 key: " + outputS3Key);
 
         if (timelineState.getCanvasWidth() != null) canvasWidth = timelineState.getCanvasWidth();
         if (timelineState.getCanvasHeight() != null) canvasHeight = timelineState.getCanvasHeight();
-
-        File tempDir = new File("temp");
-        if (!tempDir.exists()) tempDir.mkdirs();
 
         double totalDuration = Math.max(
                 timelineState.getSegments().stream().mapToDouble(VideoSegment::getTimelineEndTime).max().orElse(0.0),
@@ -2255,40 +2334,45 @@ public class VideoEditingService {
                         )
                 )
         );
-        System.out.println("Total video duration: " + totalDuration + " seconds");
 
         List<String> command = new ArrayList<>();
-        command.add(PathConfig.ffmpegPath);
+        command.add(ffmpegPath);
 
         StringBuilder filterComplex = new StringBuilder();
         Map<String, String> videoInputIndices = new HashMap<>();
         Map<String, String> audioInputIndices = new HashMap<>();
-        Map<String, String> textInputIndices = new HashMap<>(); // Add this
-        List<File> tempTextFiles = new ArrayList<>(); // Add this
+        Map<String, String> textInputIndices = new HashMap<>();
+        List<File> tempFiles = new ArrayList<>();
         int inputCount = 0;
 
         filterComplex.append("color=c=black:s=").append(canvasWidth).append("x").append(canvasHeight)
                 .append(":d=").append(totalDuration).append("[base];");
 
         for (VideoSegment vs : timelineState.getSegments()) {
+            File videoFile = s3Service.downloadFile(vs.getSourceVideoPath());
+            tempFiles.add(videoFile);
             command.add("-i");
-            command.add(PathConfig.baseDir + "\\videos\\" + vs.getSourceVideoPath());
+            command.add(videoFile.getAbsolutePath());
             videoInputIndices.put(vs.getId(), String.valueOf(inputCount));
             audioInputIndices.put(vs.getId(), String.valueOf(inputCount));
             inputCount++;
         }
 
         for (ImageSegment is : timelineState.getImageSegments()) {
+            File imageFile = s3Service.downloadFile(is.getImagePath());
+            tempFiles.add(imageFile);
             command.add("-loop");
             command.add("1");
             command.add("-i");
-            command.add(PathConfig.baseDir + "\\" + is.getImagePath());
+            command.add(imageFile.getAbsolutePath());
             videoInputIndices.put(is.getId(), String.valueOf(inputCount++));
         }
 
         for (AudioSegment as : timelineState.getAudioSegments()) {
+            File audioFile = s3Service.downloadFile(as.getAudioPath());
+            tempFiles.add(audioFile);
             command.add("-i");
-            command.add(PathConfig.baseDir + "\\" + as.getAudioPath());
+            command.add(audioFile.getAbsolutePath());
             audioInputIndices.put(as.getId(), String.valueOf(inputCount++));
         }
 
@@ -2297,8 +2381,11 @@ public class VideoEditingService {
                 System.err.println("Skipping text segment " + ts.getId() + ": empty text");
                 continue;
             }
+            File tempDir = Files.createTempDirectory("text_").toFile();
+            tempFiles.add(tempDir);
             String textPngPath = generateTextPng(ts, tempDir, canvasWidth, canvasHeight);
-            tempTextFiles.add(new File(textPngPath));
+            File textPngFile = new File(textPngPath);
+            tempFiles.add(textPngFile);
             command.add("-loop");
             command.add("1");
             command.add("-i");
@@ -2332,13 +2419,11 @@ public class VideoEditingService {
                 filterComplex.append("trim=").append(vs.getStartTime()).append(":").append(vs.getEndTime()).append(",");
                 filterComplex.append("setpts=PTS-STARTPTS+").append(vs.getTimelineStartTime()).append("/TB,");
 
-                // Store crop values before applying crop
                 double cropL = vs.getCropL() != null ? vs.getCropL() : 0.0;
                 double cropR = vs.getCropR() != null ? vs.getCropR() : 0.0;
                 double cropT = vs.getCropT() != null ? vs.getCropT() : 0.0;
                 double cropB = vs.getCropB() != null ? vs.getCropB() : 0.0;
 
-                // Validate crop percentages
                 if (cropL < 0 || cropL > 100 || cropR < 0 || cropR > 100 || cropT < 0 || cropT > 100 || cropB < 0 || cropB > 100) {
                     throw new IllegalArgumentException("Crop percentages must be between 0 and 100 for segment " + vs.getId());
                 }
@@ -2346,7 +2431,6 @@ public class VideoEditingService {
                     throw new IllegalArgumentException("Total crop percentages (left+right or top+bottom) must be less than 100 for segment " + vs.getId());
                 }
 
-                // Apply filters
                 List<Filter> segmentFilters = timelineState.getFilters().stream()
                         .filter(f -> f.getSegmentId().equals(vs.getId()))
                         .collect(Collectors.toList());
@@ -2458,7 +2542,6 @@ public class VideoEditingService {
                     }
                 }
 
-                // Apply transitions and get position and crop parameters
                 List<Transition> relevantTransitions = timelineState.getTransitions().stream()
                         .filter(t -> t.getSegmentId() != null && t.getSegmentId().equals(vs.getId()))
                         .filter(t -> t.getLayer() == vs.getLayer())
@@ -2466,7 +2549,6 @@ public class VideoEditingService {
 
                 Map<String, String> transitionOffsets = applyTransitionFilters(filterComplex, relevantTransitions, vs.getTimelineStartTime(), vs.getTimelineEndTime(), canvasWidth, canvasHeight);
 
-                // Apply crop filter for wipe transition
                 boolean hasTransitionCrop = !transitionOffsets.get("cropWidth").equals("iw") || !transitionOffsets.get("cropHeight").equals("ih") ||
                         !transitionOffsets.get("cropX").equals("0") || !transitionOffsets.get("cropY").equals("0");
                 if (hasTransitionCrop) {
@@ -2487,7 +2569,6 @@ public class VideoEditingService {
                             ", enabled between t=" + transStart + " and t=" + transEnd);
                 }
 
-                // Apply rotation from transition
                 String rotationExpr = transitionOffsets.get("rotation");
                 if (rotationExpr != null && !rotationExpr.equals("0")) {
                     filterComplex.append("format=rgba,");
@@ -2496,7 +2577,6 @@ public class VideoEditingService {
                     System.out.println("Rotation applied to segment " + vs.getId() + ": " + rotationExpr);
                 }
 
-                // Apply opacity
                 double opacity = vs.getOpacity() != null ? vs.getOpacity() : 1.0;
                 if (opacity < 1.0) {
                     filterComplex.append("format=rgba,");
@@ -2505,16 +2585,12 @@ public class VideoEditingService {
                     System.out.println("Opacity applied to video segment " + vs.getId() + ": " + opacity);
                 }
 
-                // Create a pad filter to maintain original dimensions
                 if (cropL > 0 || cropR > 0 || cropT > 0 || cropB > 0) {
-                    // Calculate dimensions and offsets for the pad filter
-                    // We need to first apply the crop filter
                     String cropWidth = String.format("iw*(1-%.6f-%.6f)", cropL / 100.0, cropR / 100.0);
                     String cropHeight = String.format("ih*(1-%.6f-%.6f)", cropT / 100.0, cropB / 100.0);
                     String cropX = String.format("iw*%.6f", cropL / 100.0);
                     String cropY = String.format("ih*%.6f", cropT / 100.0);
 
-                    // Apply the crop
                     filterComplex.append("crop=").append(cropWidth).append(":")
                             .append(cropHeight).append(":")
                             .append(cropX).append(":")
@@ -2531,7 +2607,6 @@ public class VideoEditingService {
                     System.out.println("Pad filter to restore original dimensions for segment " + vs.getId());
                 }
 
-                // Handle scaling with keyframes
                 StringBuilder scaleExpr = new StringBuilder();
                 List<Keyframe> scaleKeyframes = vs.getKeyframes().getOrDefault("scale", new ArrayList<>());
                 double defaultScale = vs.getScale() != null ? vs.getScale() : 1.0;
@@ -2560,7 +2635,6 @@ public class VideoEditingService {
                     scaleExpr.append(String.format("%.6f", defaultScale));
                 }
 
-                // Apply transition scale multiplier
                 String transitionScale = transitionOffsets.get("scale");
                 if (!transitionScale.equals("1")) {
                     scaleExpr.insert(0, "(").append(")*(").append(transitionScale).append(")");
@@ -2568,7 +2642,6 @@ public class VideoEditingService {
 
                 filterComplex.append("scale=w='iw*").append(scaleExpr).append("':h='ih*").append(scaleExpr).append("':eval=frame[scaled").append(outputLabel).append("];");
 
-                // Handle position X with keyframes
                 StringBuilder xExpr = new StringBuilder();
                 List<Keyframe> posXKeyframes = vs.getKeyframes().getOrDefault("positionX", new ArrayList<>());
                 Integer defaultPosX = vs.getPositionX();
@@ -2598,14 +2671,12 @@ public class VideoEditingService {
                     xExpr.append(String.format("%.6f", baseX));
                 }
 
-                // Add transition offset for x
                 String xTransitionOffset = transitionOffsets.get("x");
                 if (!xTransitionOffset.equals("0")) {
                     xExpr.append("+").append(xTransitionOffset);
                 }
                 xExpr.insert(0, "(W/2)+(").append(")-(w/2)");
 
-                // Handle position Y with keyframes
                 StringBuilder yExpr = new StringBuilder();
                 List<Keyframe> posYKeyframes = vs.getKeyframes().getOrDefault("positionY", new ArrayList<>());
                 Integer defaultPosY = vs.getPositionY();
@@ -2635,14 +2706,12 @@ public class VideoEditingService {
                     yExpr.append(String.format("%.6f", baseY));
                 }
 
-                // Add transition offset for y
                 String yTransitionOffset = transitionOffsets.get("y");
                 if (!yTransitionOffset.equals("0")) {
                     yExpr.append("+").append(yTransitionOffset);
                 }
                 yExpr.insert(0, "(H/2)+(").append(")-(h/2)");
 
-                // Overlay the scaled video onto the previous output
                 filterComplex.append("[").append(lastOutput).append("][scaled").append(outputLabel).append("]");
                 filterComplex.append("overlay=x='").append(xExpr).append("':y='").append(yExpr).append("':format=auto");
                 filterComplex.append(":enable='between(t,").append(vs.getTimelineStartTime()).append(",").append(vs.getTimelineEndTime()).append(")'");
@@ -2659,13 +2728,11 @@ public class VideoEditingService {
                 filterComplex.append("trim=0:").append(String.format("%.6f", segmentDuration)).append(",");
                 filterComplex.append("setpts=PTS-STARTPTS+").append(is.getTimelineStartTime()).append("/TB,");
 
-                // Store crop values before applying crop
                 double cropL = is.getCropL() != null ? is.getCropL() : 0.0;
                 double cropR = is.getCropR() != null ? is.getCropR() : 0.0;
                 double cropT = is.getCropT() != null ? is.getCropT() : 0.0;
                 double cropB = is.getCropB() != null ? is.getCropB() : 0.0;
 
-                // Validate crop percentages
                 if (cropL < 0 || cropL > 100 || cropR < 0 || cropR > 100 || cropT < 0 || cropT > 100 || cropB < 0 || cropB > 100) {
                     throw new IllegalArgumentException("Crop percentages must be between 0 and 100 for segment " + is.getId());
                 }
@@ -2673,15 +2740,12 @@ public class VideoEditingService {
                     throw new IllegalArgumentException("Total crop percentages (left+right or top+bottom) must be less than 100 for segment " + is.getId());
                 }
 
-                // Create a pad filter to maintain original dimensions
                 if (cropL > 0 || cropR > 0 || cropT > 0 || cropB > 0) {
-                    // Calculate dimensions and offsets for the pad filter
                     String cropWidth = String.format("iw*(1-%.6f-%.6f)", cropL / 100.0, cropR / 100.0);
                     String cropHeight = String.format("ih*(1-%.6f-%.6f)", cropT / 100.0, cropB / 100.0);
                     String cropX = String.format("iw*%.6f", cropL / 100.0);
                     String cropY = String.format("ih*%.6f", cropT / 100.0);
 
-                    // Apply the crop
                     filterComplex.append("crop=").append(cropWidth).append(":")
                             .append(cropHeight).append(":")
                             .append(cropX).append(":")
@@ -2689,7 +2753,6 @@ public class VideoEditingService {
                     System.out.println("Crop filter for image segment " + is.getId() + ": w=" + cropWidth +
                             ", h=" + cropHeight + ", x=" + cropX + ", y=" + cropY);
 
-                    // Apply a pad filter to restore original dimensions with transparent padding
                     filterComplex.append("format=rgba,");
                     filterComplex.append("pad=iw/(1-").append(String.format("%.6f", (cropL + cropR) / 100.0)).append("):")
                             .append("ih/(1-").append(String.format("%.6f", (cropT + cropB) / 100.0)).append("):")
@@ -2699,7 +2762,6 @@ public class VideoEditingService {
                     System.out.println("Pad filter to restore original dimensions for segment " + is.getId());
                 }
 
-                // Apply filters
                 List<Filter> segmentFilters = timelineState.getFilters().stream()
                         .filter(f -> f.getSegmentId().equals(is.getId()))
                         .collect(Collectors.toList());
@@ -2811,7 +2873,6 @@ public class VideoEditingService {
                     }
                 }
 
-                // Apply transitions and get position and crop parameters
                 List<Transition> relevantTransitions = timelineState.getTransitions().stream()
                         .filter(t -> t.getSegmentId() != null && t.getSegmentId().equals(is.getId()))
                         .filter(t -> t.getLayer() == is.getLayer())
@@ -2819,7 +2880,6 @@ public class VideoEditingService {
 
                 Map<String, String> transitionOffsets = applyTransitionFilters(filterComplex, relevantTransitions, is.getTimelineStartTime(), is.getTimelineEndTime(), canvasWidth, canvasHeight);
 
-                // Apply crop filter for wipe transition
                 boolean hasCrop = !transitionOffsets.get("cropWidth").equals("iw") || !transitionOffsets.get("cropHeight").equals("ih") ||
                         !transitionOffsets.get("cropX").equals("0") || !transitionOffsets.get("cropY").equals("0");
                 if (hasCrop) {
@@ -2840,7 +2900,6 @@ public class VideoEditingService {
                             ", enabled between t=" + transStart + " and t=" + transEnd);
                 }
 
-                // Apply rotation from transition
                 String rotationExpr = transitionOffsets.get("rotation");
                 if (rotationExpr != null && !rotationExpr.equals("0")) {
                     filterComplex.append("format=rgba,");
@@ -2849,7 +2908,6 @@ public class VideoEditingService {
                     System.out.println("Rotation applied to segment " + is.getId() + ": " + rotationExpr);
                 }
 
-                // Apply opacity
                 double opacity = is.getOpacity() != null ? is.getOpacity() : 1.0;
                 if (opacity < 1.0) {
                     filterComplex.append("format=rgba,");
@@ -2858,7 +2916,6 @@ public class VideoEditingService {
                     System.out.println("Opacity applied to image segment " + is.getId() + ": " + opacity);
                 }
 
-                // Handle scaling with keyframes
                 StringBuilder scaleExpr = new StringBuilder();
                 List<Keyframe> scaleKeyframes = is.getKeyframes().getOrDefault("scale", new ArrayList<>());
                 double defaultScale = is.getScale() != null ? is.getScale() : 1.0;
@@ -2887,7 +2944,6 @@ public class VideoEditingService {
                     scaleExpr.append(String.format("%.6f", defaultScale));
                 }
 
-                // Apply transition scale multiplier
                 String transitionScale = transitionOffsets.get("scale");
                 if (!transitionScale.equals("1")) {
                     scaleExpr.insert(0, "(").append(")*(").append(transitionScale).append(")");
@@ -2895,7 +2951,6 @@ public class VideoEditingService {
 
                 filterComplex.append("scale=w='iw*").append(scaleExpr).append("':h='ih*").append(scaleExpr).append("':eval=frame[scaled").append(outputLabel).append("];");
 
-                // Handle position X with keyframes
                 StringBuilder xExpr = new StringBuilder();
                 List<Keyframe> posXKeyframes = is.getKeyframes().getOrDefault("positionX", new ArrayList<>());
                 Integer defaultPosX = is.getPositionX();
@@ -2925,14 +2980,12 @@ public class VideoEditingService {
                     xExpr.append(String.format("%.6f", baseX));
                 }
 
-                // Add transition offset for x
                 String xTransitionOffset = transitionOffsets.get("x");
                 if (!xTransitionOffset.equals("0")) {
                     xExpr.append("+").append(xTransitionOffset);
                 }
                 xExpr.insert(0, "(W/2)+(").append(")-(w/2)");
 
-                // Handle position Y with keyframes
                 StringBuilder yExpr = new StringBuilder();
                 List<Keyframe> posYKeyframes = is.getKeyframes().getOrDefault("positionY", new ArrayList<>());
                 Integer defaultPosY = is.getPositionY();
@@ -2962,14 +3015,12 @@ public class VideoEditingService {
                     yExpr.append(String.format("%.6f", baseY));
                 }
 
-                // Add transition offset for y
                 String yTransitionOffset = transitionOffsets.get("y");
                 if (!yTransitionOffset.equals("0")) {
                     yExpr.append("+").append(yTransitionOffset);
                 }
                 yExpr.insert(0, "(H/2)+(").append(")-(h/2)");
 
-                // Overlay the scaled image onto the previous output
                 filterComplex.append("[").append(lastOutput).append("][scaled").append(outputLabel).append("]");
                 filterComplex.append("overlay=x='").append(xExpr).append("':y='").append(yExpr).append("':format=auto");
                 filterComplex.append(":enable='between(t,").append(is.getTimelineStartTime()).append(",").append(is.getTimelineEndTime()).append(")'");
@@ -2985,7 +3036,6 @@ public class VideoEditingService {
                     continue;
                 }
 
-                // Apply transitions and get position and crop parameters
                 List<Transition> relevantTransitions = timelineState.getTransitions().stream()
                         .filter(t -> t.getSegmentId() != null && t.getSegmentId().equals(ts.getId()))
                         .filter(t -> t.getLayer() == ts.getLayer())
@@ -2993,13 +3043,11 @@ public class VideoEditingService {
 
                 Map<String, String> transitionOffsets = applyTransitionFilters(filterComplex, relevantTransitions, ts.getTimelineStartTime(), ts.getTimelineEndTime(), canvasWidth, canvasHeight);
 
-                // Process the text PNG input
                 double segmentDuration = ts.getTimelineEndTime() - ts.getTimelineStartTime();
                 filterComplex.append("[").append(inputIdx).append(":v]");
                 filterComplex.append("trim=0:").append(String.format("%.6f", segmentDuration)).append(",");
                 filterComplex.append("setpts=PTS-STARTPTS+").append(ts.getTimelineStartTime()).append("/TB,");
 
-                // Apply crop filter for wipe transition
                 boolean hasCrop = !transitionOffsets.get("cropWidth").equals("iw") || !transitionOffsets.get("cropHeight").equals("ih") ||
                         !transitionOffsets.get("cropX").equals("0") || !transitionOffsets.get("cropY").equals("0");
                 if (hasCrop) {
@@ -3020,7 +3068,6 @@ public class VideoEditingService {
                             ", enabled between t=" + transStart + " and t=" + transEnd);
                 }
 
-                // Apply rotation from transition
                 String rotationExpr = transitionOffsets.get("rotation");
                 if (rotationExpr != null && !rotationExpr.equals("0")) {
                     filterComplex.append("format=rgba,");
@@ -3029,7 +3076,6 @@ public class VideoEditingService {
                     System.out.println("Rotation applied to text segment " + ts.getId() + ": " + rotationExpr);
                 }
 
-                // Apply opacity
                 double opacity = ts.getOpacity() != null ? ts.getOpacity() : 1.0;
                 if (opacity < 1.0) {
                     filterComplex.append("format=rgba,");
@@ -3038,12 +3084,10 @@ public class VideoEditingService {
                     System.out.println("Opacity applied to text segment " + ts.getId() + ": " + opacity);
                 }
 
-                // Handle scaling with keyframes
                 StringBuilder scaleExpr = new StringBuilder();
                 List<Keyframe> scaleKeyframes = ts.getKeyframes().getOrDefault("scale", new ArrayList<>());
                 double defaultScale = ts.getScale() != null ? ts.getScale() : 1.0;
 
-                // Determine maximum scale used in PNG generation (must match generateTextPng)
                 double maxScale = defaultScale;
                 if (!scaleKeyframes.isEmpty()) {
                     maxScale = Math.max(
@@ -3055,15 +3099,13 @@ public class VideoEditingService {
                     );
                 }
 
-                // Apply resolution multiplier to scale down high-resolution PNG (must match generateTextPng)
                 double resolutionMultiplier = canvasWidth >= 3840 ? 1.5 : 2.0;
-                double baseScale = 1.0 / resolutionMultiplier; // Base scale accounts for resolution multiplier only
+                double baseScale = 1.0 / resolutionMultiplier;
 
-                // Build the scale expression for keyframes
                 if (!scaleKeyframes.isEmpty()) {
                     Collections.sort(scaleKeyframes, Comparator.comparingDouble(Keyframe::getTime));
                     double firstKfValue = ((Number) scaleKeyframes.get(0).getValue()).doubleValue();
-                    scaleExpr.append(String.format("%.6f", firstKfValue / maxScale)); // Normalize by maxScale
+                    scaleExpr.append(String.format("%.6f", firstKfValue / maxScale));
                     for (int j = 1; j < scaleKeyframes.size(); j++) {
                         Keyframe prevKf = scaleKeyframes.get(j - 1);
                         Keyframe kf = scaleKeyframes.get(j);
@@ -3081,10 +3123,9 @@ public class VideoEditingService {
                         }
                     }
                 } else {
-                    scaleExpr.append(String.format("%.6f", defaultScale / maxScale)); // Normalize by maxScale
+                    scaleExpr.append(String.format("%.6f", defaultScale / maxScale));
                 }
 
-                // Apply transition scale multiplier
                 String transitionScale = transitionOffsets.get("scale");
                 if (!transitionScale.equals("1")) {
                     scaleExpr.insert(0, "(").append(")*(").append(transitionScale).append(")");
@@ -3094,7 +3135,6 @@ public class VideoEditingService {
                         .append("':h='ih*").append(baseScale).append("*").append(scaleExpr)
                         .append("':flags=lanczos:force_original_aspect_ratio=decrease:eval=frame[scaled").append(outputLabel).append("];");
 
-                // Handle position X with keyframes
                 StringBuilder xExpr = new StringBuilder();
                 List<Keyframe> posXKeyframes = ts.getKeyframes().getOrDefault("positionX", new ArrayList<>());
                 Integer defaultPosX = ts.getPositionX();
@@ -3124,14 +3164,12 @@ public class VideoEditingService {
                     xExpr.append(String.format("%.6f", baseX));
                 }
 
-                // Add transition offset for x
                 String xTransitionOffset = transitionOffsets.get("x");
                 if (!xTransitionOffset.equals("0")) {
                     xExpr.append("+").append(xTransitionOffset);
                 }
                 xExpr.insert(0, "(W/2)+(").append(")-(w/2)");
 
-                // Handle position Y with keyframes
                 StringBuilder yExpr = new StringBuilder();
                 List<Keyframe> posYKeyframes = ts.getKeyframes().getOrDefault("positionY", new ArrayList<>());
                 Integer defaultPosY = ts.getPositionY();
@@ -3161,14 +3199,12 @@ public class VideoEditingService {
                     yExpr.append(String.format("%.6f", baseY));
                 }
 
-                // Add transition offset for y
                 String yTransitionOffset = transitionOffsets.get("y");
                 if (!yTransitionOffset.equals("0")) {
                     yExpr.append("+").append(yTransitionOffset);
                 }
                 yExpr.insert(0, "(H/2)+(").append(")-(h/2)");
 
-                // Overlay the scaled text PNG onto the previous output
                 filterComplex.append("[").append(lastOutput).append("][scaled").append(outputLabel).append("]");
                 filterComplex.append("overlay=x='").append(xExpr).append("':y='").append(yExpr).append("':format=auto");
                 filterComplex.append(":enable='between(t,").append(ts.getTimelineStartTime()).append(",").append(ts.getTimelineEndTime()).append(")'");
@@ -3182,8 +3218,27 @@ public class VideoEditingService {
         List<String> audioOutputs = new ArrayList<>();
         int audioCount = 0;
 
+        double earliestTimelineStart = timelineState.getAudioSegments().stream()
+                .filter(as -> as.getTimelineStartTime() >= 0 && as.getTimelineEndTime() > as.getTimelineStartTime())
+                .mapToDouble(AudioSegment::getTimelineStartTime)
+                .min()
+                .orElse(totalDuration);
+
+        if (earliestTimelineStart > 0 && earliestTimelineStart < totalDuration && !timelineState.getAudioSegments().isEmpty()) {
+            String audioOutput = "aa" + audioCount++;
+            double silenceDuration = Math.min(earliestTimelineStart, totalDuration);
+            filterComplex.append("anullsrc=r=44100:cl=stereo:duration=").append(String.format("%.6f", silenceDuration));
+            filterComplex.append("[").append(audioOutput).append("];");
+            audioOutputs.add(audioOutput);
+            System.out.println("Added initial silence of duration: " + silenceDuration + " seconds");
+        }
+
         for (AudioSegment as : timelineState.getAudioSegments()) {
             String inputIdx = audioInputIndices.get(as.getId());
+            if (inputIdx == null) {
+                System.err.println("No input index found for audio segment " + as.getId());
+                continue;
+            }
             String audioOutput = "aa" + audioCount++;
             double audioStart = as.getStartTime();
             double audioEnd = as.getEndTime();
@@ -3192,105 +3247,97 @@ public class VideoEditingService {
             double sourceDuration = audioEnd - audioStart;
             double timelineDuration = timelineEnd - timelineStart;
 
-            // Validate timing
             if (audioStart < 0 || audioEnd <= audioStart || timelineStart < 0 || timelineEnd <= timelineStart) {
                 System.err.println("Invalid timing for audio segment " + as.getId() + ": start=" + audioStart +
                         ", end=" + audioEnd + ", timelineStart=" + timelineStart + ", timelineEnd=" + timelineEnd);
                 continue;
             }
+            if (Math.abs(sourceDuration - timelineDuration) > 0.001) {
+                System.err.println("Warning: Audio segment " + as.getId() + " has mismatched durations: " +
+                        "sourceDuration=" + sourceDuration + ", timelineDuration=" + timelineDuration);
+                timelineEnd = timelineStart + sourceDuration;
+                timelineDuration = sourceDuration;
+            }
 
             filterComplex.append("[").append(inputIdx).append(":a]");
             filterComplex.append("atrim=").append(String.format("%.6f", audioStart)).append(":").append(String.format("%.6f", audioEnd)).append(",");
-            filterComplex.append("asetpts=PTS-STARTPTS,");
+            filterComplex.append("asetpts=PTS-STARTPTS");
 
-            // Handle volume with keyframes
             List<Keyframe> volumeKeyframes = as.getKeyframes().getOrDefault("volume", new ArrayList<>());
             double defaultVolume = as.getVolume() != null ? as.getVolume() : 1.0;
 
-            // Debug keyframes
-            System.out.println("Processing audio segment " + as.getId() + " with " + volumeKeyframes.size() + " volume keyframes:");
-            for (Keyframe kf : volumeKeyframes) {
-                System.out.println("  Keyframe: time=" + kf.getTime() + ", value=" + kf.getValue());
-            }
-
+            System.out.println("Processing audio segment " + as.getId() + " with " + volumeKeyframes.size() + " volume keyframes");
             if (!volumeKeyframes.isEmpty()) {
-                // Sort and validate keyframes
                 Collections.sort(volumeKeyframes, Comparator.comparingDouble(Keyframe::getTime));
-                double segmentDuration = timelineEnd - timelineStart;
+                double finalTimelineDuration = timelineDuration;
+                List<Keyframe> validKeyframes = volumeKeyframes.stream()
+                        .filter(kf -> {
+                            double time = kf.getTime();
+                            double value = ((Number) kf.getValue()).doubleValue();
+                            boolean valid = time >= 0 && time <= finalTimelineDuration && value >= 0;
+                            if (!valid) {
+                                System.err.println("Invalid keyframe for audio segment " + as.getId() + ": time=" + time + ", value=" + value);
+                            }
+                            return valid;
+                        })
+                        .collect(Collectors.toList());
 
-                for (Keyframe kf : volumeKeyframes) {
-                    double kfTime = kf.getTime();
-                    double kfValue = ((Number) kf.getValue()).doubleValue();
-                    if (kfTime < 0 || kfTime > segmentDuration) {
-                        System.err.println("Invalid keyframe time for audio segment " + as.getId() + ": time=" + kfTime +
-                                ", segmentDuration=" + segmentDuration);
-                        continue;
-                    }
-                    if (kfValue < 0 || kfValue > 1) {
-                        System.err.println("Invalid keyframe value for audio segment " + as.getId() + ": value=" + kfValue);
-                        continue;
-                    }
-                }
+                if (!validKeyframes.isEmpty()) {
+                    StringBuilder volumeExpr = new StringBuilder("volume=");
+                    if (validKeyframes.size() == 1) {
+                        double value = ((Number) validKeyframes.get(0).getValue()).doubleValue();
+                        volumeExpr.append(String.format("%.6f", value));
+                    } else {
+                        volumeExpr.append("'");
+                        for (int j = 0; j < validKeyframes.size() - 1; j++) {
+                            Keyframe currentKf = validKeyframes.get(j);
+                            Keyframe nextKf = validKeyframes.get(j + 1);
+                            double currentTime = currentKf.getTime();
+                            double nextTime = nextKf.getTime();
+                            double currentValue = ((Number) currentKf.getValue()).doubleValue();
+                            double nextValue = ((Number) nextKf.getValue()).doubleValue();
 
-                // Build simplified volume expression
-                StringBuilder volumeExpr = new StringBuilder();
-                if (volumeKeyframes.size() == 1) {
-                    double kfValue = ((Number) volumeKeyframes.get(0).getValue()).doubleValue();
-                    volumeExpr.append(String.format("%.6f", kfValue));
-                } else {
-                    volumeExpr.append("'");
-                    for (int j = 0; j < volumeKeyframes.size() - 1; j++) {
-                        Keyframe currentKf = volumeKeyframes.get(j);
-                        Keyframe nextKf = volumeKeyframes.get(j + 1);
-                        double currentTime = currentKf.getTime();
-                        double nextTime = nextKf.getTime();
-                        double currentValue = ((Number) currentKf.getValue()).doubleValue();
-                        double nextValue = ((Number) nextKf.getValue()).doubleValue();
-
-                        if (nextTime > currentTime) {
-                            String progress = String.format("(t-%.6f)/(%.6f-%.6f)", currentTime, nextTime, currentTime);
-                            String interpolatedValue = String.format("%.6f+(%.6f-%.6f)*%s", currentValue, nextValue, currentValue, progress);
-                            volumeExpr.append(String.format("if(between(t,%.6f,%.6f),%s,", currentTime, nextTime, interpolatedValue));
+                            if (nextTime > currentTime) {
+                                String progress = String.format("(t-%.6f)/(%.6f-%.6f)", currentTime, nextTime, currentTime);
+                                String interpolatedValue = String.format("%.6f+(%.6f-%.6f)*min(1,max(0,%s))", currentValue, nextValue, currentValue, progress);
+                                volumeExpr.append(String.format("if(between(t,%.6f,%.6f),%s,", currentTime, nextTime, interpolatedValue));
+                            }
                         }
+                        double lastValue = ((Number) validKeyframes.get(validKeyframes.size() - 1).getValue()).doubleValue();
+                        volumeExpr.append(String.format("%.6f", lastValue));
+                        for (int j = 0; j < validKeyframes.size() - 1; j++) {
+                            volumeExpr.append(")");
+                        }
+                        volumeExpr.append("'");
                     }
-                    Keyframe lastKf = volumeKeyframes.get(volumeKeyframes.size() - 1);
-                    volumeExpr.append(String.format("%.6f", ((Number) lastKf.getValue()).doubleValue()));
-                    for (int j = 0; j < volumeKeyframes.size() - 1; j++) {
-                        volumeExpr.append(")");
-                    }
-                    volumeExpr.append("'");
+                    volumeExpr.append(":eval=frame");
+                    filterComplex.append(",").append(volumeExpr);
+                    System.out.println("Volume expression for audio segment " + as.getId() + ": " + volumeExpr);
+                } else {
+                    filterComplex.append(",").append("volume=").append(String.format("%.6f", defaultVolume));
                 }
-
-                filterComplex.append("volume=").append(volumeExpr).append(":eval=frame,");
-                System.out.println("Volume expression for audio segment " + as.getId() + ": " + volumeExpr);
             } else {
-                filterComplex.append("volume=").append(String.format("%.6f", defaultVolume)).append(",");
+                filterComplex.append(",").append("volume=").append(String.format("%.6f", defaultVolume));
             }
 
-            // Apply delay
-            filterComplex.append("adelay=").append((int)(timelineStart * 1000)).append("|").append((int)(timelineStart * 1000)).append(",");
-
-            // Handle duration
-            if (sourceDuration < timelineDuration) {
-                filterComplex.append("apad=pad_dur=").append(String.format("%.6f", timelineDuration - sourceDuration)).append(",");
-            } else if (sourceDuration > timelineDuration) {
-                filterComplex.append("atrim=0:").append(String.format("%.6f", timelineDuration)).append(",");
+            if (timelineStart > 0) {
+                filterComplex.append(",").append("adelay=").append((int)(timelineStart * 1000)).append("|").append((int)(timelineStart * 1000));
             }
 
-            // Ensure audio extends to the end of the video
-            filterComplex.append("apad=pad_dur=").append(String.format("%.6f", totalDuration - timelineEnd)).append(",");
-            filterComplex.append("asetpts=PTS-STARTPTS");
+            if (timelineEnd < totalDuration) {
+                filterComplex.append(",").append("apad=pad_dur=").append(String.format("%.6f", totalDuration - timelineEnd));
+            }
 
             filterComplex.append("[").append(audioOutput).append("];");
             audioOutputs.add(audioOutput);
         }
 
         if (!audioOutputs.isEmpty()) {
-            for (String audioOutput : audioOutputs) {
-                filterComplex.append("[").append(audioOutput).append("]");
-            }
-            filterComplex.append("amix=inputs=").append(audioOutputs.size()).append(":duration=longest[aout];");
+            filterComplex.append("[").append(String.join("][", audioOutputs)).append("]");
+            filterComplex.append("amix=inputs=").append(audioOutputs.size()).append(":duration=longest:dropout_transition=0:normalize=0[aout];");
         }
+
+        System.out.println("Constructed filter_complex: " + filterComplex.toString());
 
         filterComplex.append("[").append(lastOutput).append("]setpts=PTS-STARTPTS[vout]");
 
@@ -3302,16 +3349,20 @@ public class VideoEditingService {
         if (!audioOutputs.isEmpty()) {
             command.add("-map");
             command.add("[aout]");
+        } else {
+            command.add("-an");
         }
 
         command.add("-c:v");
         command.add("libx264");
         command.add("-preset");
-        command.add("veryslow"); // High-quality encoding
+        command.add("veryslow");
         command.add("-b:v");
-        command.add(canvasWidth >= 3840 ? "10M" : "5M"); // Dynamic bitrate for 4K vs. 1080p
+        command.add(canvasWidth >= 3840 ? "10M" : "5M");
         command.add("-pix_fmt");
-        command.add("yuv420p"); // Ensure compatibility with most players
+        command.add("yuv420p");
+        command.add("-color_range");
+        command.add("tv");
         command.add("-c:a");
         command.add("aac");
         command.add("-b:a");
@@ -3321,30 +3372,32 @@ public class VideoEditingService {
         command.add("-t");
         command.add(String.valueOf(totalDuration));
         command.add("-r");
-        command.add(String.valueOf(fps != null ? fps : 30)); // Fallback to 30 fps if null
+        command.add(String.valueOf(fps != null ? fps : 30));
+
+        File tempOutputFile = Files.createTempFile("export_", ".mp4").toFile();
+        tempFiles.add(tempOutputFile);
         command.add("-y");
-        command.add(outputPath);
+        command.add(tempOutputFile.getAbsolutePath());
 
         System.out.println("FFmpeg command: " + String.join(" ", command));
+
         try {
             executeFFmpegCommand(command);
+            s3Service.uploadFile(outputS3Key, tempOutputFile);
+            return outputS3Key;
         } finally {
-            // Clean up temporary text PNGs
-            for (File tempFile : tempTextFiles) {
+            for (File tempFile : tempFiles) {
                 if (tempFile.exists()) {
                     try {
                         tempFile.delete();
-                        System.out.println("Deleted temporary text PNG: " + tempFile.getAbsolutePath());
+                        System.out.println("Deleted temporary file: " + tempFile.getAbsolutePath());
                     } catch (Exception e) {
-                        System.err.println("Failed to delete temporary text PNG " + tempFile.getAbsolutePath() + ": " + e.getMessage());
+                        System.err.println("Failed to delete temporary file " + tempFile.getAbsolutePath() + ": " + e.getMessage());
                     }
                 }
             }
         }
-
-        return outputPath;
     }
-
     private String generateTextPng(TextSegment ts, File tempDir, int canvasWidth, int canvasHeight) throws IOException {
         // Resolution multiplier for high-quality text (1.5 for 4K, 2.0 for 1080p)
         final double RESOLUTION_MULTIPLIER = canvasWidth >= 3840 ? 1.5 : 2.0;
