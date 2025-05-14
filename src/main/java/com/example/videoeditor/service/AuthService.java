@@ -23,7 +23,8 @@ import org.xbill.DNS.MXRecord;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.InputStreamReader;
@@ -47,6 +48,8 @@ public class AuthService {
     @Value("${spring.security.oauth2.client.registration.google.client-id}")
     private String googleClientId;
 
+    private static final Logger logger = LoggerFactory.getLogger(AuthService.class);
+
     public AuthService(UserRepository userRepository, VerificationTokenRepository verificationTokenRepository,
                        PasswordEncoder passwordEncoder, JwtUtil jwtUtil, EmailService emailService, DeveloperRepository developerRepository) {
         this.userRepository = userRepository;
@@ -59,72 +62,64 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(AuthRequest request) throws MessagingException {
-        // Enhanced email validation
         if (!isValidEmail(request.getEmail())) {
-            throw new RuntimeException("Please enter a valid email address. The email does not exist or cannot receive mail.");
+            throw new InvalidEmailException("Invalid or non-existent email address");
         }
-
-        // Check email domain validity
         if (!isEmailDomainValid(request.getEmail())) {
-            throw new RuntimeException("The email domain is not valid");
+            throw new InvalidEmailException("Invalid email domain");
         }
-
-        // Validate name
         if (request.getName() == null || request.getName().trim().isEmpty()) {
-            throw new RuntimeException("Name is required");
+            throw new IllegalArgumentException("Name is required");
         }
 
         Optional<User> existingUser = userRepository.findByEmail(request.getEmail());
         if (existingUser.isPresent()) {
             User user = existingUser.get();
             if (user.isGoogleAuth()) {
-                throw new RuntimeException("Email is already associated with a Google account. Please log in with Google.");
+                throw new EmailAlreadyRegisteredException("Email is linked to Google account");
             }
-            throw new RuntimeException("This email is already registered");
+            throw new EmailAlreadyRegisteredException("Email already registered");
         }
 
-        // Validate password strength
         if (!isPasswordValid(request.getPassword())) {
-            throw new RuntimeException("Password must be at least 8 characters with at least one letter and one number");
+            throw new IllegalArgumentException("Password must be at least 8 characters with one letter and one number");
         }
 
-        // Create and save user
         User user = new User();
         user.setEmail(request.getEmail());
-        user.setName(request.getName().trim()); // Set name
+        user.setName(request.getName().trim());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setGoogleAuth(false);
         user.setEmailVerified(false);
         userRepository.save(user);
 
-        // Generate and save verification token
         String token = UUID.randomUUID().toString();
-        VerificationToken verificationToken = new VerificationToken(
-                token,
-                user,
-                LocalDateTime.now().plusHours(24)
-        );
-        System.out.println("Saving verification token: " + token); // Debug log
+        VerificationToken verificationToken = new VerificationToken(token, user, LocalDateTime.now().plusHours(24));
         verificationTokenRepository.save(verificationToken);
-        System.out.println("Verification token saved for user: " + user.getEmail()); // Debug log
+        logger.debug("Verification token generated for user: {}", user.getEmail());
 
-        // Send verification email
         try {
-            String firstName = request.getName().split(" ")[0]; // Use first word of name
+            String firstName = request.getName().split(" ")[0];
             emailService.sendVerificationEmail(user.getEmail(), firstName, token);
         } catch (MessagingException e) {
-            // If email fails to send, delete the user
+            logger.error("Failed to send verification email to {}: {}", user.getEmail(), e.getMessage());
             userRepository.delete(user);
-            throw new RuntimeException("Failed to send verification email. Please check your email address.");
+            throw new RuntimeException("Failed to send verification email");
         }
 
-        return new AuthResponse(
-                null,
-                user.getEmail(),
-                user.getName(),
-                "Verification email sent. Please check your inbox to complete registration.",
-                false
-        );
+        return new AuthResponse(null, user.getEmail(), user.getName(), "Verification email sent", false);
+    }
+    // Custom exceptions
+    public class InvalidEmailException extends RuntimeException {
+        public InvalidEmailException(String message) {
+            super(message);
+        }
+    }
+
+    public class EmailAlreadyRegisteredException extends RuntimeException {
+        public EmailAlreadyRegisteredException(String message) {
+            super(message);
+        }
     }
 
     @Transactional

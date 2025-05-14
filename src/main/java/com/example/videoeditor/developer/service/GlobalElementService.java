@@ -5,7 +5,7 @@ import com.example.videoeditor.developer.repository.DeveloperRepository;
 import com.example.videoeditor.developer.entity.GlobalElement;
 import com.example.videoeditor.developer.repository.GlobalElementRepository;
 import com.example.videoeditor.dto.ElementDto;
-import com.example.videoeditor.service.S3Service; // Add S3Service
+import com.example.videoeditor.service.S3Service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -24,7 +24,7 @@ public class GlobalElementService {
     private final GlobalElementRepository globalElementRepository;
     private final DeveloperRepository developerRepository;
     private final ObjectMapper objectMapper;
-    private final S3Service s3Service; // Add S3Service
+    private final S3Service s3Service;
 
     public GlobalElementService(GlobalElementRepository globalElementRepository, DeveloperRepository developerRepository, ObjectMapper objectMapper, S3Service s3Service) {
         this.globalElementRepository = globalElementRepository;
@@ -50,7 +50,7 @@ public class GlobalElementService {
             String fileName = originalFileName;
             String s3Key = "elements/" + fileName;
             int counter = 1;
-            while (s3Service.fileExists(s3Key)) { // Assume S3Service has a method to check file existence
+            while (s3Service.fileExists(s3Key)) {
                 String baseName = originalFileName.substring(0, originalFileName.lastIndexOf('.'));
                 String extension = originalFileName.substring(originalFileName.lastIndexOf('.'));
                 fileName = baseName + "_" + counter + extension;
@@ -58,8 +58,8 @@ public class GlobalElementService {
                 counter++;
             }
 
-            // Upload to S3
-            s3Service.uploadFile(s3Key, file);
+            // Upload to S3 (fixed parameter order)
+            s3Service.uploadFile(file, s3Key);
 
             // Create JSON for globalElement_json
             Map<String, String> elementData = new HashMap<>();
