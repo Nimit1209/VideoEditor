@@ -11,9 +11,11 @@ import com.example.videoeditor.repository.ProjectRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -29,6 +31,7 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.text.DecimalFormat;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -47,10 +50,18 @@ public class VideoEditingService {
     private final S3Service s3Service; // Add S3Service
 
 
-    private final String ffmpegPath = "/usr/local/bin/ffmpeg";
-    private final String baseDir = "/Users/nimitpatel/Desktop/VideoEditor 2"; // Base directory constant
-    private String globalElementsDirectory= "elements/";
+    @Value("${ffmpeg.path:/usr/local/bin/ffmpeg}")
+    private String ffmpegPath;
+    @Value("${app.base-dir:/tmp}")
+    private String baseDir;
+    @Value("${app.global-elements-dir:elements/}")
+    private String globalElementsDirectory;
 
+    @Value("${ffprobe.path:/usr/bin/ffprobe}")
+    private String ffprobePath;
+
+    private String runtimeFffmpegPath;
+    private String runtimeFfprobePath;
 
     public VideoEditingService(ProjectRepository projectRepository, ObjectMapper objectMapper,
                                Map<String, EditSession> activeSessions,
@@ -103,6 +114,62 @@ public class VideoEditingService {
             this.lastAccessTime = lastAccessTime;
         }
     }
+
+
+    @PostConstruct
+    public void init() throws IOException {
+        String os = System.getProperty("os.name").toLowerCase();
+        String binaryBasePath = os.contains("mac") ? "binaries/macos/" : "binaries/linux/";
+
+        try {
+            runtimeFffmpegPath = downloadBinary(binaryBasePath + "ffmpeg", "ffmpeg");
+            runtimeFfprobePath = downloadBinary(binaryBasePath + "ffprobe", "ffprobe");
+
+            makeExecutable(runtimeFffmpegPath);
+            makeExecutable(runtimeFfprobePath);
+
+            System.out.println("Successfully initialized FFmpeg at: " + runtimeFffmpegPath);
+            System.out.println("Successfully initialized FFprobe at: " + runtimeFfprobePath);
+        } catch (IOException e) {
+            System.err.println("Failed to initialize FFmpeg/FFprobe: " + e.getMessage());
+            throw new IOException("Initialization failed: " + e.getMessage(), e);
+        }
+    }
+
+    private String downloadBinary(String s3Key, String binaryName) throws IOException {
+        File tempFile = null;
+        try {
+            tempFile = Files.createTempFile(binaryName + "-", ".bin").toFile();
+            File downloadedFile = s3Service.downloadFile(s3Key); // Download to tempFile
+            Files.copy(downloadedFile.toPath(), tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            System.out.println("Downloaded binary from S3: " + s3Key + " to " + tempFile.getAbsolutePath());
+            return tempFile.getAbsolutePath();
+        } catch (IOException e) {
+            System.err.println("Failed to download binary from S3: " + s3Key + ", error: " + e.getMessage());
+            throw new IOException("Failed to download binary from S3: " + s3Key, e);
+        } finally {
+            // Only delete if necessary (avoid premature deletion)
+            if (tempFile != null && tempFile.exists()) {
+                try {
+                    tempFile.deleteOnExit(); // Delete on JVM exit instead of immediately
+                } catch (Exception e) {
+                    System.err.println("Failed to schedule deletion of temp file: " + tempFile.getAbsolutePath());
+                }
+            }
+        }
+    }
+
+    private void makeExecutable(String filePath) throws IOException {
+        File file = new File(filePath);
+        if (!file.exists()) {
+            throw new IOException("Binary file does not exist: " + filePath);
+        }
+        if (!file.setExecutable(true)) {
+            throw new IOException("Failed to make binary executable: " + filePath);
+        }
+        System.out.println("Made binary executable: " + filePath);
+    }
+
 
     // NEW: Helper method to round doubles to three decimal places
     private double roundToThreeDecimals(Double value) {
@@ -461,7 +528,6 @@ public class VideoEditingService {
             throw new IOException("Video file is not readable: " + videoFile.getAbsolutePath());
         }
 
-        // Store audio in project-specific extracted folder
         File audioDir = new File(baseDir, "audio/projects/" + projectId + "/extracted");
         if (!audioDir.exists() && !audioDir.mkdirs()) {
             throw new IOException("Failed to create audio directory: " + audioDir.getAbsolutePath());
@@ -476,7 +542,7 @@ public class VideoEditingService {
 
         // Check if audio stream exists using ffprobe
         List<String> probeCommand = new ArrayList<>();
-        probeCommand.add(ffmpegPath.replace("ffmpeg.exe", "ffprobe.exe"));
+        probeCommand.add(runtimeFfprobePath); // Updated
         probeCommand.add("-v");
         probeCommand.add("error");
         probeCommand.add("-show_streams");
@@ -498,24 +564,16 @@ public class VideoEditingService {
         }
         int probeExitCode = probeProcess.waitFor();
         if (probeExitCode != 0) {
-            // Log the probe command output for debugging
-            System.err.println("ffprobe command failed: " + String.join(" ", probeCommand));
+            System.err.println("ffprobe command: " + String.join(" ", probeCommand));
             System.err.println("ffprobe output: " + probeOutput.toString());
             throw new IOException("Failed to probe video for audio streams: " + videoPath + ", ffprobe exit code: " + probeExitCode);
         }
 
         // Parse ffprobe output
-        Map<String, Object> probeData;
-        try {
-            probeData = objectMapper.readValue(probeOutput.toString(), new TypeReference<Map<String, Object>>() {});
-        } catch (JsonProcessingException e) {
-            System.err.println("Failed to parse ffprobe output: " + probeOutput.toString());
-            throw new IOException("Invalid ffprobe output for video: " + videoPath, e);
-        }
+        Map<String, Object> probeData = objectMapper.readValue(probeOutput.toString(), new TypeReference<Map<String, Object>>() {});
         List<Map<String, Object>> streams = (List<Map<String, Object>>) probeData.getOrDefault("streams", new ArrayList<>());
         if (streams.isEmpty()) {
             System.out.println("No audio stream found in video: " + videoPath);
-            // Return without extracting audio
             Map<String, String> result = new HashMap<>();
             result.put("audioPath", null);
             result.put("waveformJsonPath", null);
@@ -524,41 +582,32 @@ public class VideoEditingService {
 
         // Proceed with audio extraction
         List<String> command = new ArrayList<>();
-        command.add(ffmpegPath);
+        command.add(runtimeFffmpegPath); // Updated
         command.add("-i");
         command.add(videoFile.getAbsolutePath());
-        command.add("-vn"); // No video
+        command.add("-vn");
         command.add("-acodec");
         command.add("mp3");
         command.add("-y");
         command.add(audioFile.getAbsolutePath());
 
-        try {
-            executeFFmpegCommand(command);
-        } catch (RuntimeException e) {
-            System.err.println("Audio extraction failed for video: " + videoPath);
-            throw new IOException("Failed to extract audio from video: " + videoPath, e);
-        }
+        executeFFmpegCommand(command);
 
-        // Generate and save waveform JSON if audio was extracted
         if (audioFile.exists()) {
             waveformJsonPath = generateAndSaveWaveformJson(relativePath, projectId);
         } else {
             System.out.println("Audio file was not created: " + audioFile.getAbsolutePath());
-            // Return without waveform if extraction failed
             Map<String, String> result = new HashMap<>();
             result.put("audioPath", null);
             result.put("waveformJsonPath", null);
             return result;
         }
 
-        // Update project
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
         addExtractedAudio(project, relativePath, cleanAudioFileName, videoPath, waveformJsonPath);
         projectRepository.save(project);
 
-        // Return audioPath and waveformJsonPath
         Map<String, String> result = new HashMap<>();
         result.put("audioPath", relativePath);
         result.put("waveformJsonPath", waveformJsonPath);
@@ -2150,49 +2199,62 @@ public class VideoEditingService {
         }
     }
     public double getAudioDuration(Long projectId, String filename) throws IOException, InterruptedException {
-        String baseDir = System.getProperty("user.dir");
-        // Define both possible paths
-        String extractedPath = Paths.get(baseDir, "audio/projects", String.valueOf(projectId), "extracted", filename).toString();
-        String directPath = Paths.get(baseDir, "audio/projects", String.valueOf(projectId), filename).toString();
-
-        // Try extracted path first, then direct path
+        String extractedPath = "audio/projects/" + projectId + "/extracted/" + filename;
+        String directPath = "audio/projects/" + projectId + "/" + filename;
         String[] possiblePaths = {extractedPath, directPath};
-        String validPath = null;
+        String validS3Key = null;
 
-        for (String path : possiblePaths) {
-            File audioFile = new File(path);
-            if (audioFile.exists()) {
-                validPath = path;
+        for (String s3Key : possiblePaths) {
+            if (s3Service.fileExists(s3Key)) {
+                validS3Key = s3Key;
                 break;
             }
         }
 
-        if (validPath == null) {
-            throw new IOException("Audio file not found at either path for project ID: " + projectId + ", filename: " + filename);
+        if (validS3Key == null) {
+            throw new IOException("Audio file not found in S3 for project ID: " + projectId + ", filename: " + filename);
         }
 
-        ProcessBuilder builder = new ProcessBuilder(
-                "C:\\Users\\raj.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffprobe.exe",
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                validPath
-        );
+        File audioFile = null;
+        try {
+            audioFile = s3Service.downloadFile(validS3Key);
+            System.out.println("Attempting to get duration for audio at S3 key: " + validS3Key);
 
-        System.out.println("Attempting to get duration for audio at path: " + validPath);
+            // Use runtimeFfprobePath instead of ffprobePath
+            ProcessBuilder builder = new ProcessBuilder(
+                    runtimeFfprobePath, // Updated
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey =1",
+                    audioFile.getAbsolutePath()
+            );
+            builder.redirectErrorStream(true);
 
-        builder.redirectErrorStream(true);
+            Process process = builder.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            StringBuilder output = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+            String duration = output.toString().trim();
+            int exitCode = process.waitFor();
 
-        Process process = builder.start();
-        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-        String duration = reader.readLine();
-        int exitCode = process.waitFor();
+            if (exitCode != 0 || duration.isEmpty()) {
+                throw new IOException("Failed to get audio duration for S3 key: " + validS3Key + ", ffprobe exit code: " + exitCode + ", output: " + output);
+            }
 
-        if (exitCode != 0 || duration == null) {
-            throw new IOException("Failed to get audio duration for file: " + filename);
+            return Double.parseDouble(duration);
+        } finally {
+            if (audioFile != null && audioFile.exists()) {
+                try {
+                    audioFile.delete();
+                    System.out.println("Deleted temporary audio file: " + audioFile.getAbsolutePath());
+                } catch (Exception e) {
+                    System.err.println("Failed to delete temporary audio file: " + audioFile.getAbsolutePath());
+                }
+            }
         }
-
-        return Double.parseDouble(duration);
     }
 
     private String generateAndSaveWaveformJson(String audioS3Key, Long projectId) throws IOException, InterruptedException {

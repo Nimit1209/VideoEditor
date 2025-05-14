@@ -5,14 +5,13 @@ import com.example.videoeditor.developer.repository.DeveloperRepository;
 import com.example.videoeditor.developer.entity.GlobalElement;
 import com.example.videoeditor.developer.repository.GlobalElementRepository;
 import com.example.videoeditor.dto.ElementDto;
+import com.example.videoeditor.service.S3Service; // Add S3Service
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,13 +24,13 @@ public class GlobalElementService {
     private final GlobalElementRepository globalElementRepository;
     private final DeveloperRepository developerRepository;
     private final ObjectMapper objectMapper;
+    private final S3Service s3Service; // Add S3Service
 
-    private String globalElementsDirectory = "/Users/nimitpatel/Desktop/VideoEditor 2/elements";
-
-    public GlobalElementService(GlobalElementRepository globalElementRepository, DeveloperRepository developerRepository, ObjectMapper objectMapper) {
+    public GlobalElementService(GlobalElementRepository globalElementRepository, DeveloperRepository developerRepository, ObjectMapper objectMapper, S3Service s3Service) {
         this.globalElementRepository = globalElementRepository;
         this.developerRepository = developerRepository;
         this.objectMapper = objectMapper;
+        this.s3Service = s3Service;
     }
 
     @Transactional
@@ -40,13 +39,6 @@ public class GlobalElementService {
                 .orElseThrow(() -> new RuntimeException("Developer not found"));
 
         List<ElementDto> elements = new ArrayList<>();
-        File directory = new File(globalElementsDirectory);
-        System.out.println("Saving to directory: " + directory.getAbsolutePath());
-        if (!directory.exists()) {
-            System.out.println("Creating directory: " + directory.getAbsolutePath());
-            boolean created = directory.mkdirs();
-            System.out.println("Directory created: " + created);
-        }
 
         for (MultipartFile file : files) {
             String originalFileName = file.getOriginalFilename();
@@ -56,24 +48,24 @@ public class GlobalElementService {
 
             // Handle filename conflicts
             String fileName = originalFileName;
-            File destFile = new File(directory, fileName);
+            String s3Key = "elements/" + fileName;
             int counter = 1;
-            while (destFile.exists()) {
+            while (s3Service.fileExists(s3Key)) { // Assume S3Service has a method to check file existence
                 String baseName = originalFileName.substring(0, originalFileName.lastIndexOf('.'));
                 String extension = originalFileName.substring(originalFileName.lastIndexOf('.'));
-                fileName = baseName + "_" + counter + extension; // e.g., example_1.png
-                destFile = new File(directory, fileName);
+                fileName = baseName + "_" + counter + extension;
+                s3Key = "elements/" + fileName;
                 counter++;
             }
 
-            System.out.println("Writing file: " + destFile.getAbsolutePath());
-            file.transferTo(destFile);
+            // Upload to S3
+            s3Service.uploadFile(s3Key, file);
 
             // Create JSON for globalElement_json
             Map<String, String> elementData = new HashMap<>();
-            elementData.put("imagePath", "elements/" + fileName);
+            elementData.put("imagePath", s3Key);
             elementData.put("imageFileName", fileName);
-            String json = objectMapper.writeValueAsString(elementData); // {"filePath": "elements/fileName", "fileName": "fileName"}
+            String json = objectMapper.writeValueAsString(elementData);
 
             GlobalElement element = new GlobalElement();
             element.setGlobalElementJson(json);
@@ -81,7 +73,7 @@ public class GlobalElementService {
 
             ElementDto dto = new ElementDto();
             dto.setId(element.getId().toString());
-            dto.setFilePath("elements/" + fileName);
+            dto.setFilePath(s3Key);
             dto.setFileName(fileName);
             elements.add(dto);
         }
@@ -97,15 +89,14 @@ public class GlobalElementService {
 
     private ElementDto toElementDto(GlobalElement globalElement) {
         try {
-            // Parse globalElement_json
             Map<String, String> jsonData = objectMapper.readValue(
                     globalElement.getGlobalElementJson(),
                     new TypeReference<Map<String, String>>() {}
             );
             ElementDto dto = new ElementDto();
             dto.setId(globalElement.getId().toString());
-            dto.setFilePath(jsonData.get("imagePath")); // elements/fileName
-            dto.setFileName(jsonData.get("imageFileName")); // fileName
+            dto.setFilePath(jsonData.get("imagePath"));
+            dto.setFileName(jsonData.get("imageFileName"));
             return dto;
         } catch (IOException e) {
             throw new RuntimeException("Error parsing globalElement_json: " + e.getMessage());
