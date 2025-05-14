@@ -5,18 +5,18 @@ import com.example.videoeditor.entity.User;
 import com.example.videoeditor.entity.Video;
 import com.example.videoeditor.repository.EditedVideoRepository;
 import com.example.videoeditor.repository.UserRepository;
+import com.example.videoeditor.service.S3Service; // Add S3Service
 import com.example.videoeditor.service.VideoService;
 import com.example.videoeditor.security.JwtUtil;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.net.MalformedURLException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 
 @RestController
@@ -26,51 +26,49 @@ public class VideoController {
     private final UserRepository userRepository;
     private final JwtUtil jwtUtil;
     private final EditedVideoRepository editedVideoRepository;
+    private final S3Service s3Service; // Add S3Service
 
-    public VideoController(VideoService videoService, UserRepository userRepository, JwtUtil jwtUtil, EditedVideoRepository editedVideoRepository) {
+    public VideoController(VideoService videoService, UserRepository userRepository, JwtUtil jwtUtil, EditedVideoRepository editedVideoRepository, S3Service s3Service) {
         this.videoService = videoService;
         this.userRepository = userRepository;
         this.jwtUtil = jwtUtil;
         this.editedVideoRepository = editedVideoRepository;
+        this.s3Service = s3Service;
     }
-
-    private final String uploadDir = "videos"; // Change to your actual folder
 
     @GetMapping("/edited-videos/{fileName}")
     public ResponseEntity<Resource> getEditedVideo(@PathVariable String fileName) {
         try {
-            Path videoPath = Paths.get("edited_videos").resolve(fileName).normalize();
-            Resource resource = new UrlResource(videoPath.toUri());
-
-            if (!resource.exists() || !resource.isReadable()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-            }
+            String s3Key = "edited_videos/" + fileName;
+            File tempFile = s3Service.downloadFile(s3Key);
+            InputStreamResource resource = new InputStreamResource(new FileInputStream(tempFile));
 
             return ResponseEntity.ok()
-                    .contentType(MediaTypeFactory.getMediaType(resource).orElse(MediaType.APPLICATION_OCTET_STREAM))
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + resource.getFilename() + "\"")
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + fileName + "\"")
                     .body(resource);
-
-        } catch (MalformedURLException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        } finally {
+            // Clean up temporary file (handled in S3Service or ensure cleanup here if needed)
         }
     }
 
-
-
     @GetMapping("/{filename}")
-    public ResponseEntity<Resource> getVideo(@PathVariable String filename) throws MalformedURLException {
-        Path filePath = Paths.get(uploadDir).resolve(filename).normalize();
-        Resource resource = new UrlResource(filePath.toUri());
+    public ResponseEntity<Resource> getVideo(@PathVariable String filename) {
+        try {
+            // Assume filename is the S3 key or part of it
+            String s3Key = "videos/users/" + filename; // Adjust based on stored Video.filePath
+            File tempFile = s3Service.downloadFile(s3Key);
+            InputStreamResource resource = new InputStreamResource(new FileInputStream(tempFile));
 
-        if (!resource.exists()) {
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("video/mp4"))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
+                    .body(resource);
+        } catch (IOException e) {
             return ResponseEntity.notFound().build();
         }
-
-        return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("video/mp4"))
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
-                .body(resource);
     }
 
     @PostMapping("/upload/{projectId}")
@@ -81,11 +79,11 @@ public class VideoController {
             @RequestParam(value = "titles", required = false) String[] titles
     ) throws IOException {
         try {
-            String email = jwtUtil.extractEmail(token.substring(7)); // Extract user email from JWT
+            String email = jwtUtil.extractEmail(token.substring(7));
             User user = userRepository.findByEmail(email)
                     .orElseThrow(() -> new RuntimeException("User not found"));
 
-            List<Video> videos = videoService.uploadVideos(files, titles, user); // Updated call
+            List<Video> videos = videoService.uploadVideos(files, titles, user);
             return ResponseEntity.ok(videos);
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -106,7 +104,6 @@ public class VideoController {
         return ResponseEntity.ok(videos);
     }
 
-
     @GetMapping("/edited-videos")
     public ResponseEntity<List<EditedVideo>> getUserEditedVideos(@RequestHeader("Authorization") String token) {
         String email = jwtUtil.extractEmail(token.substring(7));
@@ -117,8 +114,6 @@ public class VideoController {
         return ResponseEntity.ok(editedVideos);
     }
 
-
-    // Add this class at the end of VideoController
     public static class SplitRequest {
         private String videoPath;
         private double splitTimeSeconds;
@@ -132,16 +127,12 @@ public class VideoController {
             this.segmentId = segmentId;
         }
 
-        // Getters and setters
         public String getVideoPath() { return videoPath; }
         public void setVideoPath(String videoPath) { this.videoPath = videoPath; }
         public double getSplitTimeSeconds() { return splitTimeSeconds; }
-        public void setSplitTimeSeconds(double splitTimeSeconds) {
-            this.splitTimeSeconds = splitTimeSeconds;
-        }
+        public void setSplitTimeSeconds(double splitTimeSeconds) { this.splitTimeSeconds = splitTimeSeconds; }
     }
 
-    // Also add this method to get video duration
     @GetMapping("/duration/{filename}")
     public ResponseEntity<Double> getVideoDuration(@RequestHeader("Authorization") String token,
                                                    @PathVariable String filename) {
@@ -150,16 +141,14 @@ public class VideoController {
             User user = userRepository.findByEmail(email)
                     .orElseThrow(() -> new RuntimeException("User not found"));
 
-            String videoPath = filename.startsWith("edited_")
+            String videoS3Key = filename.startsWith("edited_")
                     ? "edited_videos/" + filename
-                    : "videos/" + filename;
+                    : "videos/users/" + filename; // Adjust based on Video.filePath
 
-            double duration = videoService.getVideoDuration(videoPath);
+            double duration = videoService.getVideoDuration(videoS3Key);
             return ResponseEntity.ok(duration);
-
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
-
 }
