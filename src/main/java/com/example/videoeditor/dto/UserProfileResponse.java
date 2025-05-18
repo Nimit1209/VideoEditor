@@ -5,12 +5,14 @@ public class UserProfileResponse {
     private String name;
     private String picture;
     private boolean googleAuth;
+    private String role; // Changed to String to match enum name
 
-    public UserProfileResponse(String email, String name, String picture, boolean googleAuth) {
+    public UserProfileResponse(String email, String name, String picture, boolean googleAuth, String role) {
         this.email = email;
         this.name = name;
         this.picture = picture;
         this.googleAuth = googleAuth;
+        this.role = role;
     }
 
     // Getters and setters
@@ -44,5 +46,13 @@ public class UserProfileResponse {
 
     public void setGoogleAuth(boolean googleAuth) {
         this.googleAuth = googleAuth;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 }

@@ -1,28 +1,30 @@
 package com.example.videoeditor.controller;
 
+import com.backblaze.b2.client.exceptions.B2Exception;
 import com.example.videoeditor.dto.*;
 import com.example.videoeditor.entity.Project;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.repository.ProjectRepository;
 import com.example.videoeditor.repository.UserRepository;
 import com.example.videoeditor.security.JwtUtil;
-import com.example.videoeditor.service.S3Service;
+import com.example.videoeditor.service.BackblazeB2Service;
 import com.example.videoeditor.service.VideoEditingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
-
-import java.io.File;
+import org.springframework.web.multipart.MultipartFile;import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
@@ -35,18 +37,21 @@ public class ProjectController {
     private final ProjectRepository projectRepository;
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
-    private final S3Service s3Service;
+    private final BackblazeB2Service backblazeB2Service;
+    private static final Logger logger = LoggerFactory.getLogger(ProjectController.class);
+    @Value("${app.base-dir:/tmp}")
+    private String baseDir;
 
     public ProjectController(
             VideoEditingService videoEditingService,
             ProjectRepository projectRepository,
             JwtUtil jwtUtil,
-            UserRepository userRepository, S3Service s3Service) {
+            UserRepository userRepository, BackblazeB2Service backblazeB2Service) {
         this.videoEditingService = videoEditingService;
         this.projectRepository = projectRepository;
         this.jwtUtil = jwtUtil;
         this.userRepository = userRepository;
-        this.s3Service = s3Service;
+        this.backblazeB2Service = backblazeB2Service;
     }
 
     private User getUserFromToken(String token) {
@@ -123,15 +128,10 @@ public class ProjectController {
     public ResponseEntity<String> exportProject(
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
-            @RequestParam String sessionId) throws IOException, InterruptedException {
-        // Export the project using the existing session ID
-        String exportedVideoPath = String.valueOf(videoEditingService.exportProject(sessionId));
-
-        // Create a File object to match the return type of your original method
-        File exportedVideo = new File(exportedVideoPath);
-
-        // Return just the filename as in your original implementation
-        return ResponseEntity.ok(exportedVideo.getName());
+            @RequestParam String sessionId) throws IOException, InterruptedException, B2Exception {
+        User user = getUserFromToken(token);
+        String exportedVideoPath = videoEditingService.exportProject(sessionId); // Error: returns File, expected String
+        return ResponseEntity.ok(exportedVideoPath); // Returns B2 path (e.g., exports/{projectId}/output.mp4)
     }
 
     @GetMapping("/{projectId}")
@@ -162,6 +162,7 @@ public class ProjectController {
             Double startTime = request.get("startTime") != null ? ((Number) request.get("startTime")).doubleValue() : null;
             Double endTime = request.get("endTime") != null ? ((Number) request.get("endTime")).doubleValue() : null;
             Double opacity = request.get("opacity") != null ? ((Number) request.get("opacity")).doubleValue() : null;
+            Double speed = request.get("speed") != null ? ((Number) request.get("speed")).doubleValue() : null; // New parameter
             Boolean createAudioSegment = request.get("createAudioSegment") != null ?
                     Boolean.valueOf(request.get("createAudioSegment").toString()) :
                     (request.get("skipAudio") != null ? !Boolean.valueOf(request.get("skipAudio").toString()) : true);
@@ -173,6 +174,9 @@ public class ProjectController {
             if (opacity != null && (opacity < 0 || opacity > 1)) {
                 return ResponseEntity.badRequest().body("Opacity must be between 0 and 1");
             }
+            if (speed != null && (speed < 0.1 || speed > 5.0)) { // Validate speed
+                return ResponseEntity.badRequest().body("Speed must be between 0.1 and 5.0");
+            }
 
             // Call the service method with updated parameters
             videoEditingService.addVideoToTimeline(
@@ -183,7 +187,8 @@ public class ProjectController {
                     timelineEndTime,
                     startTime,
                     endTime,
-                    createAudioSegment
+                    createAudioSegment,
+                    speed // Pass speed to service
             );
 
             // Retrieve the newly added video and audio segments
@@ -203,6 +208,7 @@ public class ProjectController {
             Map<String, Object> response = new HashMap<>();
             response.put("videoSegmentId", addedVideoSegment.getId());
             response.put("layer", addedVideoSegment.getLayer());
+            response.put("speed", addedVideoSegment.getSpeed()); // Include speed in response
             if (addedAudioSegment != null) {
                 response.put("audioSegmentId", addedAudioSegment.getId());
                 response.put("audioLayer", addedAudioSegment.getLayer());
@@ -249,6 +255,7 @@ public class ProjectController {
             Double cropR = request.containsKey("cropR") ? Double.valueOf(request.get("cropR").toString()) : null;
             Double cropT = request.containsKey("cropT") ? Double.valueOf(request.get("cropT").toString()) : null;
             Double cropB = request.containsKey("cropB") ? Double.valueOf(request.get("cropB").toString()) : null;
+            Double speed = request.containsKey("speed") ? Double.valueOf(request.get("speed").toString()) : null; // New parameter
             @SuppressWarnings("unchecked")
             Map<String, List<Map<String, Object>>> keyframes = request.containsKey("keyframes") ? (Map<String, List<Map<String, Object>>>) request.get("keyframes") : null;
 
@@ -286,6 +293,9 @@ public class ProjectController {
             if (cropB != null && (cropB < 0 || cropB > 100)) {
                 return ResponseEntity.badRequest().body("cropB must be between 0 and 100");
             }
+            if (speed != null && (speed < 0.1 || speed > 5.0)) { // Validate speed
+                return ResponseEntity.badRequest().body("Speed must be between 0.1 and 5.0");
+            }
             // Validate total crop if static values are provided (not keyframed)
             if (parsedKeyframes == null ||
                     (!parsedKeyframes.containsKey("cropL") && !parsedKeyframes.containsKey("cropR") &&
@@ -302,7 +312,7 @@ public class ProjectController {
 
             videoEditingService.updateVideoSegment(
                     sessionId, segmentId, positionX, positionY, scale, opacity, timelineStartTime, layer,
-                    timelineEndTime, startTime, endTime, cropL, cropR, cropT, cropB, parsedKeyframes);
+                    timelineEndTime, startTime, endTime, cropL, cropR, cropT, cropB, speed, parsedKeyframes);
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -584,7 +594,7 @@ public class ProjectController {
         }
     }
 
-    //    AUDIO FUNCTIONALITY .......................................................................................
+//    AUDIO FUNCTIONALITY .......................................................................................
 
     @PostMapping("/{projectId}/upload-audio")
     public ResponseEntity<?> uploadAudio(
@@ -621,6 +631,8 @@ public class ProjectController {
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(e.getMessage());
+        } catch (B2Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -739,8 +751,8 @@ public class ProjectController {
             if (timelineStartTime != null && timelineStartTime < 0) {
                 return ResponseEntity.badRequest().body("Timeline start time must be non-negative");
             }
-            if (volume != null && (volume < 0 || volume > 1)) {
-                return ResponseEntity.badRequest().body("Volume must be between 0 and 1");
+            if (volume != null && (volume < 0 || volume > 15)) {
+                return ResponseEntity.badRequest().body("Volume must be between 0 and 15");
             }
             if (layer != null && layer >= 0) {
                 return ResponseEntity.badRequest().body("Audio layer must be negative");
@@ -798,30 +810,36 @@ public class ProjectController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            String s3Key = "audio/projects/" + projectId + "/waveforms/" + filename;
-            File tempFile = s3Service.downloadFile(s3Key);
-            try {
-                Resource resource = new FileSystemResource(tempFile);
-                String contentType = "image/png";
+            String b2Path = "audio/projects/" + projectId + "/waveforms/" + filename;
+            File tempFile = backblazeB2Service.downloadFile(b2Path, baseDir + "/temp/waveform_" + filename);
 
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
-                        .body(resource);
-            } finally {
-                if (tempFile.exists()) {
-                    tempFile.delete();
-                }
+            if (!tempFile.exists()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
-        } catch (RuntimeException e) {
-            System.err.println("Error serving waveform: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+
+            Resource resource = new InputStreamResource(Files.newInputStream(tempFile.toPath())) {
+                @Override
+                public String getFilename() {
+                    return filename;
+                }
+
+                @Override
+                public long contentLength() throws IOException {
+                    return tempFile.length();
+                }
+            };
+
+            String contentType = "image/png";
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+
         } catch (Exception e) {
             System.err.println("Error serving waveform: " + e.getMessage());
-            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
+
     @GetMapping("/{projectId}/waveform-json/{filename:.+}")
     public ResponseEntity<Resource> serveWaveformJson(
             @RequestHeader(value = "Authorization", required = false) String token,
@@ -840,30 +858,36 @@ public class ProjectController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            String s3Key = "audio/projects/" + projectId + "/waveforms/" + filename;
-            File tempFile = s3Service.downloadFile(s3Key);
-            try {
-                Resource resource = new FileSystemResource(tempFile);
-                String contentType = "application/json";
+            String b2Path = "audio/projects/" + projectId + "/waveforms/" + filename;
+            File tempFile = backblazeB2Service.downloadFile(b2Path, baseDir + "/temp/waveform_json_" + filename);
 
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
-                        .body(resource);
-            } finally {
-                if (tempFile.exists()) {
-                    tempFile.delete();
-                }
+            if (!tempFile.exists()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
-        } catch (RuntimeException e) {
-            System.err.println("Error serving waveform JSON: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+
+            Resource resource = new InputStreamResource(Files.newInputStream(tempFile.toPath())) {
+                @Override
+                public String getFilename() {
+                    return filename;
+                }
+
+                @Override
+                public long contentLength() throws IOException {
+                    return tempFile.length();
+                }
+            };
+
+            String contentType = "application/json";
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+
         } catch (Exception e) {
             System.err.println("Error serving waveform JSON: " + e.getMessage());
-            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
+
     @DeleteMapping("/{projectId}/remove-audio")
     public ResponseEntity<?> removeAudioSegment(
             @RequestHeader("Authorization") String token,
@@ -906,6 +930,8 @@ public class ProjectController {
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(e.getMessage());
+        } catch (B2Exception e) {
+            throw new RuntimeException(e);
         }
     }
     @PostMapping("/{projectId}/add-project-image-to-timeline")
@@ -1091,49 +1117,44 @@ public class ProjectController {
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
-            if (user != null && !project.getUser().getId().equals(user.getId())) {
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
-            }
+            String b2Path = "images/projects/" + projectId + "/" + filename;
+            String elementsB2Path = "elements/" + filename;
 
-            String s3Key = "images/projects/" + projectId + "/" + filename;
             File tempFile;
-            try {
-                tempFile = s3Service.downloadFile(s3Key);
-            } catch (Exception e) {
-                // Try elements directory for global elements
-                s3Key = "elements/" + filename;
-                try {
-                    tempFile = s3Service.downloadFile(s3Key);
-                } catch (Exception ex) {
-                    System.err.println("Failed to download image from S3: " + s3Key + ", error: " + ex.getMessage());
-                    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            if (filename.startsWith("elements/")) {
+                // Serve global element (publicly accessible)
+                tempFile = backblazeB2Service.downloadFile(elementsB2Path, baseDir + "/temp/" + filename);
+            } else {
+                // Serve project-specific image (requires ownership)
+                if (user != null && !project.getUser().getId().equals(user.getId())) {
+                    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
                 }
+                tempFile = backblazeB2Service.downloadFile(b2Path, baseDir + "/temp/" + filename);
             }
 
-            try {
-                Resource resource = new FileSystemResource(tempFile);
-                String contentType = determineContentType(filename);
-
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
-                        .body(resource);
-            } finally {
-                if (tempFile != null && tempFile.exists()) {
-                    try {
-                        tempFile.delete();
-                        System.out.println("Deleted temporary file: " + tempFile.getAbsolutePath());
-                    } catch (Exception e) {
-                        System.err.println("Failed to delete temporary file " + tempFile.getAbsolutePath() + ": " + e.getMessage());
-                    }
-                }
+            if (!tempFile.exists()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
             }
-        } catch (RuntimeException e) {
-            System.err.println("Error serving image: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+
+            Resource resource = new InputStreamResource(Files.newInputStream(tempFile.toPath())) {
+                @Override
+                public String getFilename() {
+                    return filename;
+                }
+
+                @Override
+                public long contentLength() throws IOException {
+                    return tempFile.length();
+                }
+            };
+
+            String contentType = determineContentType(filename);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(resource);
+
         } catch (Exception e) {
             System.err.println("Error serving image: " + e.getMessage());
-            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
@@ -1552,8 +1573,6 @@ public class ProjectController {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
-
-
     @DeleteMapping("/{projectId}")
     public ResponseEntity<?> deleteProject(
             @RequestHeader("Authorization") String token,
@@ -1600,74 +1619,75 @@ public class ProjectController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
             }
 
-            String s3Key = "audio/projects/" + projectId + "/" + filename;
-            File tempFile;
-            try {
-                tempFile = s3Service.downloadFile(s3Key);
-            } catch (Exception e) {
-                System.err.println("Failed to download audio from S3: " + s3Key + ", error: " + e.getMessage());
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
-            }
+            String b2Path = "audio/projects/" + projectId + "/" + filename;
+            String extractedB2Path = "audio/projects/" + projectId + "/extracted/" + filename;
 
-            try {
-                Resource resource = new FileSystemResource(tempFile);
-                String contentType = determineContentType(filename);
-
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
-                        .body(resource);
-            } finally {
-                if (tempFile != null && tempFile.exists()) {
-                    try {
-                        tempFile.delete();
-                        System.out.println("Deleted temporary file: " + tempFile.getAbsolutePath());
-                    } catch (Exception e) {
-                        System.err.println("Failed to delete temporary file " + tempFile.getAbsolutePath() + ": " + e.getMessage());
-                    }
+            // Download file in a single assignment
+            final File tempFile = backblazeB2Service.downloadFile(b2Path, baseDir + "/temp/audio_" + filename);
+            if (!tempFile.exists()) {
+                // Try extracted path if first attempt fails
+                final File extractedFile = backblazeB2Service.downloadFile(extractedB2Path, baseDir + "/temp/audio_" + filename);
+                if (!extractedFile.exists()) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
                 }
+                // Use extractedFile as tempFile
+                return serveResource(extractedFile, filename, determineAudioContentType(filename));
             }
-        } catch (RuntimeException e) {
-            System.err.println("Error serving audio: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+
+            return serveResource(tempFile, filename, determineAudioContentType(filename));
         } catch (Exception e) {
             System.err.println("Error serving audio: " + e.getMessage());
-            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
 
+    // Helper method to serve Resource
+    private ResponseEntity<Resource> serveResource(File file, String filename, String contentType) throws IOException {
+        Resource resource = new InputStreamResource(Files.newInputStream(file.toPath())) {
+            @Override
+            public String getFilename() {
+                return filename;
+            }
+
+            @Override
+            public long contentLength() throws IOException {
+                return file.length();
+            }
+        };
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(contentType))
+                .body(resource);
+    }
     @GetMapping("/{projectId}/audio-duration/{filename:.+}")
     public ResponseEntity<Double> getAudioDuration(
             @RequestHeader("Authorization") String token,
             @PathVariable Long projectId,
             @PathVariable String filename) {
         try {
-            String email = jwtUtil.extractEmail(token.substring(7));
-            User user = userRepository.findByEmail(email)
-                    .orElseThrow(() -> new RuntimeException("User not found"));
-
-            // Verify project exists and user has access
+            User user = getUserFromToken(token);
             Project project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
             if (!project.getUser().getId().equals(user.getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
             }
 
-            double duration = videoEditingService.getAudioDuration(projectId, filename);
+            String sanitizedFilename = sanitizeFilename(filename);
+            double duration = videoEditingService.getAudioDuration(projectId, sanitizedFilename);
             return ResponseEntity.ok(duration);
-
-        } catch (IOException | InterruptedException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(null);
+        } catch (IOException | InterruptedException | B2Exception e) {
+            logger.error("Error getting audio duration for projectId: {}, filename: {}", projectId, filename, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(null);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(null);
+            logger.warn("Not found: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
         }
     }
+
+    private String sanitizeFilename(String filename) {
+        if (filename == null) return null;
+        return filename.replaceAll("[^a-zA-Z0-9._-]", "");
+    }
+
 
     // Helper method to determine audio content type
     private String determineAudioContentType(String filename) {
@@ -1679,3 +1699,4 @@ public class ProjectController {
     }
 
 }
+

@@ -1,18 +1,22 @@
 package com.example.videoeditor.developer.service;
 
+import com.backblaze.b2.client.exceptions.B2Exception;
 import com.example.videoeditor.developer.entity.Developer;
 import com.example.videoeditor.developer.repository.DeveloperRepository;
 import com.example.videoeditor.developer.entity.GlobalElement;
 import com.example.videoeditor.developer.repository.GlobalElementRepository;
 import com.example.videoeditor.dto.ElementDto;
-import com.example.videoeditor.service.S3Service;
+import com.example.videoeditor.service.BackblazeB2Service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,17 +28,24 @@ public class GlobalElementService {
     private final GlobalElementRepository globalElementRepository;
     private final DeveloperRepository developerRepository;
     private final ObjectMapper objectMapper;
-    private final S3Service s3Service;
+    private final BackblazeB2Service backblazeB2Service;
 
-    public GlobalElementService(GlobalElementRepository globalElementRepository, DeveloperRepository developerRepository, ObjectMapper objectMapper, S3Service s3Service) {
+    @Value("${app.base-dir:/tmp}")
+    private String baseDir;
+
+    public GlobalElementService(
+            GlobalElementRepository globalElementRepository,
+            DeveloperRepository developerRepository,
+            ObjectMapper objectMapper,
+            BackblazeB2Service backblazeB2Service) {
         this.globalElementRepository = globalElementRepository;
         this.developerRepository = developerRepository;
         this.objectMapper = objectMapper;
-        this.s3Service = s3Service;
+        this.backblazeB2Service = backblazeB2Service;
     }
 
     @Transactional
-    public List<ElementDto> uploadGlobalElements(MultipartFile[] files, String title, String type, String category, String username) throws IOException {
+    public List<ElementDto> uploadGlobalElements(MultipartFile[] files, String title, String type, String category, String username) throws IOException, B2Exception {
         Developer developer = developerRepository.findByUsername(username)
                 .orElseThrow(() -> new RuntimeException("Developer not found"));
 
@@ -46,24 +57,23 @@ public class GlobalElementService {
                 throw new RuntimeException("Invalid file type. Only PNG, JPEG, GIF, or WEBP allowed.");
             }
 
-            // Handle filename conflicts
+            // Handle filename conflicts (simplified, assuming B2 handles overwrites or unique naming)
             String fileName = originalFileName;
-            String s3Key = "elements/" + fileName;
-            int counter = 1;
-            while (s3Service.fileExists(s3Key)) {
-                String baseName = originalFileName.substring(0, originalFileName.lastIndexOf('.'));
-                String extension = originalFileName.substring(originalFileName.lastIndexOf('.'));
-                fileName = baseName + "_" + counter + extension;
-                s3Key = "elements/" + fileName;
-                counter++;
-            }
 
-            // Upload to S3 (fixed parameter order)
-            s3Service.uploadFile(file, s3Key);
+            // Save to temporary file
+            String tempPath = baseDir + "/temp/elements/" + fileName;
+            File tempFile = backblazeB2Service.saveMultipartFileToTemp(file, tempPath);
+
+            // Upload to Backblaze B2
+            String b2Path = "elements/" + fileName;
+            backblazeB2Service.uploadFile(tempFile, b2Path);
+
+            // Clean up temporary file
+            Files.deleteIfExists(tempFile.toPath());
 
             // Create JSON for globalElement_json
             Map<String, String> elementData = new HashMap<>();
-            elementData.put("imagePath", s3Key);
+            elementData.put("imagePath", b2Path);
             elementData.put("imageFileName", fileName);
             String json = objectMapper.writeValueAsString(elementData);
 
@@ -73,7 +83,7 @@ public class GlobalElementService {
 
             ElementDto dto = new ElementDto();
             dto.setId(element.getId().toString());
-            dto.setFilePath(s3Key);
+            dto.setFilePath(b2Path);
             dto.setFileName(fileName);
             elements.add(dto);
         }

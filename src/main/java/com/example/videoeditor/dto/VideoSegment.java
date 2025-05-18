@@ -22,6 +22,7 @@ public class VideoSegment implements Segment {
     private Double cropR = 0.0; // Crop percentage from right (0 to 100)
     private Double cropT = 0.0; // Crop percentage from top (0 to 100)
     private Double cropB = 0.0; // Crop percentage from bottom (0 to 100)
+    private Double speed = 1.0; // Default speed is 1.0 (normal speed)
 
     private Map<String, List<Keyframe>> keyframes = new HashMap<>();
 
@@ -31,6 +32,14 @@ public class VideoSegment implements Segment {
 
     public String getAudioId() {
         return audioId;
+    }
+
+    public Double getSpeed() {
+        return speed;
+    }
+
+    public void setSpeed(Double speed) {
+        this.speed = speed;
     }
 
     public void setAudioId(String audioId) {

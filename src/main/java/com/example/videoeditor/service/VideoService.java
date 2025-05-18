@@ -1,5 +1,6 @@
 package com.example.videoeditor.service;
 
+import com.backblaze.b2.client.exceptions.B2Exception;
 import com.example.videoeditor.entity.User;
 import com.example.videoeditor.entity.Video;
 import com.example.videoeditor.repository.VideoRepository;
@@ -13,6 +14,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -21,52 +23,49 @@ public class VideoService {
     private static final Logger logger = LoggerFactory.getLogger(VideoService.class);
 
     private final VideoRepository videoRepository;
-    private final S3Service s3Service;
+    private final BackblazeB2Service backblazeB2Service;
 
     @Value("${ffprobe.path:/usr/bin/ffprobe}")
     private String ffprobePath;
 
-    public VideoService(VideoRepository videoRepository, S3Service s3Service) {
+    @Value("${app.base-dir:/tmp}")
+    private String baseDir;
+
+    public VideoService(VideoRepository videoRepository, BackblazeB2Service backblazeB2Service) {
         this.videoRepository = videoRepository;
-        this.s3Service = s3Service;
+        this.backblazeB2Service = backblazeB2Service;
     }
 
-    public List<Video> uploadVideos(MultipartFile[] files, String[] titles, User user) throws IOException {
+    public List<Video> uploadVideos(MultipartFile[] files, String[] titles, User user) throws IOException, B2Exception {
         List<Video> uploadedVideos = new ArrayList<>();
 
         for (int i = 0; i < files.length; i++) {
             MultipartFile file = files[i];
-            if (file.isEmpty()) {
-                logger.warn("Skipping empty file at index {}", i);
-                continue;
-            }
+            String originalFilename = file.getOriginalFilename();
+            String title = (titles != null && i < titles.length && titles[i] != null)
+                    ? titles[i]
+                    : originalFilename;
 
-            String originalFileName = file.getOriginalFilename();
-            String title = (titles != null && i < titles.length && titles[i] != null && !titles[i].trim().isEmpty())
-                    ? titles[i].trim()
-                    : (originalFileName != null ? originalFileName : "Untitled_" + System.currentTimeMillis());
+            // Save to temporary file
+            String tempPath = baseDir + "/temp/" + System.currentTimeMillis() + "_" + originalFilename;
+            File tempFile = backblazeB2Service.saveMultipartFileToTemp(file, tempPath);
 
-            // Generate unique S3 key
-            String uniqueFileName = user.getId() + "_" + System.currentTimeMillis() + "_" + (originalFileName != null ? originalFileName : "video");
-            String s3Key = "videos/users/" + user.getId() + "/" + uniqueFileName.replaceAll("[^a-zA-Z0-9.]", "_");
+            // Upload to Backblaze B2
+            String b2Path = "videos/users/" + user.getId() + "/" + originalFilename;
+            backblazeB2Service.uploadFile(tempFile, b2Path);
 
-            try {
-                // Upload to S3
-                s3Service.uploadFile(file, s3Key);
-                logger.debug("Uploaded video to S3: user={}, key={}", user.getEmail(), s3Key);
+            // Clean up temporary file
+            Files.deleteIfExists(tempFile.toPath());
 
-                // Store S3 key in Video entity
-                Video video = new Video();
-                video.setTitle(title);
-                video.setFilePath(s3Key);
-                video.setUser(user);
-                uploadedVideos.add(videoRepository.save(video));
-            } catch (IOException e) {
-                logger.error("Failed to upload video to S3: key={}, error={}", s3Key, e.getMessage());
-                throw new IOException("Failed to upload video: " + originalFileName, e);
-            }
+            // Save video metadata
+            Video video = new Video();
+            video.setTitle(title);
+            video.setFilePath(b2Path); // Store B2 path
+            video.setUser(user);
+            uploadedVideos.add(videoRepository.save(video));
         }
 
+        logger.info("Uploaded {} videos for user {}", uploadedVideos.size(), user.getEmail());
         return uploadedVideos;
     }
 
@@ -74,45 +73,41 @@ public class VideoService {
         return videoRepository.findByUserEmail(email);
     }
 
-    public double getVideoDuration(String videoS3Key) throws IOException, InterruptedException {
-        File videoFile = null;
-        try {
-            // Download video from S3
-            videoFile = s3Service.downloadFile(videoS3Key);
-            if (!videoFile.exists()) {
-                throw new IOException("Downloaded video file not found: " + videoFile.getAbsolutePath());
-            }
+    public double getVideoDuration(String videoPath) throws IOException, InterruptedException, B2Exception {
+        // Download video from Backblaze B2
+        String tempPath = baseDir + "/temp/video_" + System.currentTimeMillis() + ".mp4";
+        File tempFile = backblazeB2Service.downloadFile(videoPath, tempPath);
 
-            // Run ffprobe to get duration
-            ProcessBuilder builder = new ProcessBuilder(
-                    ffprobePath,
-                    "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    videoFile.getAbsolutePath()
-            );
-
-            builder.redirectErrorStream(true);
-            Process process = builder.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            String duration = reader.readLine();
-            int exitCode = process.waitFor();
-
-            if (exitCode != 0 || duration == null) {
-                logger.error("Failed to get video duration for S3 key: {}", videoS3Key);
-                throw new IOException("Failed to get video duration for S3 key: " + videoS3Key);
-            }
-
-            logger.debug("Retrieved duration {} seconds for video: {}", duration, videoS3Key);
-            return Double.parseDouble(duration);
-        } catch (NumberFormatException e) {
-            logger.error("Invalid duration format for S3 key: {}", videoS3Key, e);
-            throw new IOException("Invalid duration format for video: " + videoS3Key, e);
-        } finally {
-            // Clean up temporary file
-            if (videoFile != null && videoFile.exists()) {
-                videoFile.delete();
-            }
+        if (!tempFile.exists()) {
+            throw new IOException("Video file not found at path: " + tempPath);
         }
+
+        ProcessBuilder builder = new ProcessBuilder(
+                ffprobePath,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                tempFile.getAbsolutePath()
+        );
+
+        logger.debug("Running ffprobe on file: {}", tempFile.getAbsolutePath());
+        builder.redirectErrorStream(true);
+
+        Process process = builder.start();
+        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        String duration = reader.readLine();
+        int exitCode = process.waitFor();
+
+        // Clean up temporary file
+        Files.deleteIfExists(tempFile.toPath());
+
+        if (exitCode != 0 || duration == null) {
+            logger.error("Failed to get video duration for path: {}", videoPath);
+            throw new IOException("Failed to get video duration");
+        }
+
+        double durationSeconds = Double.parseDouble(duration);
+        logger.debug("Video duration for {}: {} seconds", videoPath, durationSeconds);
+        return durationSeconds;
     }
 }

@@ -108,6 +108,12 @@
 			<version>1.23.0</version>
 		</dependency>
 
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 		<!-- Utilities -->
 		<dependency>
 			<groupId>commons-io</groupId>
@@ -151,6 +157,38 @@
 			<artifactId>dotenv-java</artifactId>
 			<version>3.0.0</version>
 		</dependency>
+
+		<!-- Backblaze B2 -->
+		<dependency>
+			<groupId>com.backblaze.b2</groupId>
+			<artifactId>b2-sdk-core</artifactId>
+			<version>6.3.0</version>
+		</dependency>
+		<dependency>
+			<groupId>com.backblaze.b2</groupId>
+			<artifactId>b2-sdk-httpclient</artifactId>
+			<version>6.3.0</version>
+		</dependency>
+
+		<!-- Jakarta Mail API -->
+		<dependency>
+			<groupId>jakarta.mail</groupId>
+			<artifactId>jakarta.mail-api</artifactId>
+			<version>2.1.2</version>
+		</dependency>
+
+		<!-- Google HTTP Client (for NetHttpTransport and GsonFactory) -->
+		<dependency>
+			<groupId>com.google.http-client</groupId>
+			<artifactId>google-http-client</artifactId>
+			<version>1.43.3</version>
+		</dependency>
+		<dependency>
+			<groupId>com.google.http-client</groupId>
+			<artifactId>google-http-client-gson</artifactId>
+			<version>1.43.3</version>
+		</dependency>
+
 	</dependencies>
 
 	<!-- Add repositories for dependencies and plugins -->
@@ -158,6 +196,13 @@
 		<repository>
 			<id>central</id>
 			<url>https://repo.maven.apache.org/maven2</url>
+			<snapshots>
+				<enabled>false</enabled>
+			</snapshots>
+		</repository>
+		<repository>
+			<id>backblaze-b2</id>
+			<url>https://s3.us-west-002.backblazeb2.com/b2-sdk-maven/</url>
 			<snapshots>
 				<enabled>false</enabled>
 			</snapshots>
@@ -184,6 +229,7 @@
 						<path>
 							<groupId>org.projectlombok</groupId>
 							<artifactId>lombok</artifactId>
+							<version>1.18.30</version>
 						</path>
 					</annotationProcessorPaths>
 				</configuration>
@@ -199,6 +245,13 @@
 						</exclude>
 					</excludes>
 				</configuration>
+				<executions>
+					<execution>
+						<goals>
+							<goal>repackage</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 			<plugin>
 				<groupId>com.google.cloud.tools</groupId>
@@ -212,7 +265,7 @@
 						<image>${project.artifactId}:${project.version}</image>
 					</to>
 					<container>
-						<mainClass>com.example.videoeditor.VideoeditorApplication</mainClass>
+						<mainClass>com.example.videoeditor.VideoEditorApplication</mainClass>
 						<jvmFlags>
 							<jvmFlag>-Xms512m</jvmFlag>
 							<jvmFlag>-Xmx1024m</jvmFlag>

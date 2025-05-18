@@ -7,6 +7,12 @@ import java.time.LocalDateTime;
 @Table(name = "users")
 public class User {
 
+    public enum Role {
+        BASIC,
+        CREATOR,
+        STUDIO
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -31,6 +37,10 @@ public class User {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Role role = Role.BASIC; // Default to BASIC
 
     @PrePersist
     protected void onCreate() {
@@ -112,5 +122,13 @@ public class User {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public Role getRole() {
+        return role;
+    }
+
+    public void setRole(Role role) {
+        this.role = role;
     }
 }

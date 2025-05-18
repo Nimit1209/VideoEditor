@@ -14,6 +14,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
+
 @RestController
 @RequestMapping("/auth")
 public class AuthController {
@@ -65,14 +67,15 @@ public class AuthController {
                     user.getEmail(),
                     user.getName() != null ? user.getName() : "",
                     user.getProfilePicture() != null ? user.getProfilePicture() : "",
-                    user.isGoogleAuth()
+                    user.isGoogleAuth(),
+                    user.getRole().name()
             );
 
             return ResponseEntity.ok(profileResponse);
         } catch (Exception e) {
             logger.error("Error fetching user profile: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new UserProfileResponse(null, null, null, false));
+                    .body(new UserProfileResponse(null, null, null, false, null));
         }
     }
 
@@ -90,6 +93,8 @@ public class AuthController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new AuthResponse(null, request.getEmail(), null,
                             "Failed to send verification email", false));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 

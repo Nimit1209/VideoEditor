@@ -14,7 +14,10 @@ import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.gson.GsonFactory;
 import jakarta.mail.MessagingException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,10 +26,10 @@ import org.xbill.DNS.MXRecord;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
@@ -37,7 +40,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@Profile("!test") // Only active in non-test profiles
 public class AuthService {
+    private static final Logger logger = LoggerFactory.getLogger(AuthService.class);
     private final UserRepository userRepository;
     private final VerificationTokenRepository verificationTokenRepository;
     private final PasswordEncoder passwordEncoder;
@@ -48,10 +53,9 @@ public class AuthService {
     @Value("${spring.security.oauth2.client.registration.google.client-id}")
     private String googleClientId;
 
-    private static final Logger logger = LoggerFactory.getLogger(AuthService.class);
-
     public AuthService(UserRepository userRepository, VerificationTokenRepository verificationTokenRepository,
-                       PasswordEncoder passwordEncoder, JwtUtil jwtUtil, EmailService emailService, DeveloperRepository developerRepository) {
+                       PasswordEncoder passwordEncoder, JwtUtil jwtUtil, EmailService emailService,
+                       DeveloperRepository developerRepository) {
         this.userRepository = userRepository;
         this.verificationTokenRepository = verificationTokenRepository;
         this.passwordEncoder = passwordEncoder;
@@ -61,28 +65,30 @@ public class AuthService {
     }
 
     @Transactional
-    public AuthResponse register(AuthRequest request) throws MessagingException {
+    public AuthResponse register(AuthRequest request) throws MessagingException, IOException {
         if (!isValidEmail(request.getEmail())) {
-            throw new InvalidEmailException("Invalid or non-existent email address");
+            throw new RuntimeException("Please enter a valid email address. The email does not exist or cannot receive mail.");
         }
+
         if (!isEmailDomainValid(request.getEmail())) {
-            throw new InvalidEmailException("Invalid email domain");
+            throw new RuntimeException("The email domain is not valid");
         }
+
         if (request.getName() == null || request.getName().trim().isEmpty()) {
-            throw new IllegalArgumentException("Name is required");
+            throw new RuntimeException("Name is required");
         }
 
         Optional<User> existingUser = userRepository.findByEmail(request.getEmail());
         if (existingUser.isPresent()) {
             User user = existingUser.get();
             if (user.isGoogleAuth()) {
-                throw new EmailAlreadyRegisteredException("Email is linked to Google account");
+                throw new RuntimeException("Email is already associated with a Google account. Please log in with Google.");
             }
-            throw new EmailAlreadyRegisteredException("Email already registered");
+            throw new RuntimeException("This email is already registered");
         }
 
         if (!isPasswordValid(request.getPassword())) {
-            throw new IllegalArgumentException("Password must be at least 8 characters with one letter and one number");
+            throw new RuntimeException("Password must be at least 8 characters with at least one letter and one number");
         }
 
         User user = new User();
@@ -91,61 +97,58 @@ public class AuthService {
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setGoogleAuth(false);
         user.setEmailVerified(false);
+        user.setRole(User.Role.BASIC);
         userRepository.save(user);
 
         String token = UUID.randomUUID().toString();
-        VerificationToken verificationToken = new VerificationToken(token, user, LocalDateTime.now().plusHours(24));
+        VerificationToken verificationToken = new VerificationToken(
+                token,
+                user,
+                LocalDateTime.now().plusHours(24)
+        );
+        logger.info("Saving verification token for user: {}", user.getEmail());
         verificationTokenRepository.save(verificationToken);
-        logger.debug("Verification token generated for user: {}", user.getEmail());
 
         try {
             String firstName = request.getName().split(" ")[0];
             emailService.sendVerificationEmail(user.getEmail(), firstName, token);
+            logger.info("Verification email sent to: {}", user.getEmail());
         } catch (MessagingException e) {
-            logger.error("Failed to send verification email to {}: {}", user.getEmail(), e.getMessage());
             userRepository.delete(user);
-            throw new RuntimeException("Failed to send verification email");
+            logger.error("Failed to send verification email to: {}", user.getEmail(), e);
+            throw new RuntimeException("Failed to send verification email. Please check your email address.");
         }
 
-        return new AuthResponse(null, user.getEmail(), user.getName(), "Verification email sent", false);
-    }
-    // Custom exceptions
-    public class InvalidEmailException extends RuntimeException {
-        public InvalidEmailException(String message) {
-            super(message);
-        }
-    }
-
-    public class EmailAlreadyRegisteredException extends RuntimeException {
-        public EmailAlreadyRegisteredException(String message) {
-            super(message);
-        }
+        return new AuthResponse(
+                null,
+                user.getEmail(),
+                user.getName(),
+                "Verification email sent. Please check your inbox to complete registration.",
+                false
+        );
     }
 
     @Transactional
     public AuthResponse verifyEmail(String token) {
-        System.out.println("Verifying token: " + token);
+        logger.info("Verifying token: {}", token);
         VerificationToken verificationToken = verificationTokenRepository.findByToken(token)
                 .orElseThrow(() -> {
-                    System.out.println("Token not found: " + token);
+                    logger.warn("Token not found: {}", token);
                     return new RuntimeException("Invalid or unknown verification token");
                 });
 
-        System.out.println("Token expiry: " + verificationToken.getExpiryDate());
         if (verificationToken.getExpiryDate().isBefore(LocalDateTime.now())) {
             verificationTokenRepository.delete(verificationToken);
-            System.out.println("Token expired: " + token);
+            logger.warn("Token expired: {}", token);
             throw new RuntimeException("Verification token has expired. Please request a new verification email.");
         }
 
         User user = verificationToken.getUser();
-        System.out.println("User email: " + user.getEmail() + ", verified: " + user.isEmailVerified());
+        logger.info("User email: {}, verified: {}", user.getEmail(), user.isEmailVerified());
 
-        // Handle already-verified users
         if (user.isEmailVerified() || verificationToken.isVerified()) {
-            System.out.println("Email already verified for user: " + user.getEmail());
             String jwtToken = jwtUtil.generateToken(user.getEmail());
-            System.out.println("Generated JWT token: " + jwtToken);
+            logger.info("Email already verified for user: {}, generated JWT token", user.getEmail());
             return new AuthResponse(
                     jwtToken,
                     user.getEmail(),
@@ -155,15 +158,13 @@ public class AuthService {
             );
         }
 
-        // First-time verification
         user.setEmailVerified(true);
         verificationToken.setVerified(true);
         userRepository.save(user);
         verificationTokenRepository.save(verificationToken);
-        System.out.println("Email verified successfully for user: " + user.getEmail());
+        logger.info("Email verified successfully for user: {}", user.getEmail());
 
         String jwtToken = jwtUtil.generateToken(user.getEmail());
-        System.out.println("Generated JWT token: " + jwtToken);
         return new AuthResponse(
                 jwtToken,
                 user.getEmail(),
@@ -173,9 +174,8 @@ public class AuthService {
         );
     }
 
-    // Other methods remain unchanged
     @Transactional
-    public void resendVerificationEmail(String email) throws MessagingException {
+    public void resendVerificationEmail(String email) throws MessagingException, IOException {
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
@@ -183,30 +183,25 @@ public class AuthService {
             throw new RuntimeException("Email already verified");
         }
 
-        // Delete existing tokens for the user and flush to ensure deletion is committed
-        System.out.println("Deleting existing verification tokens for user: " + email);
+        logger.info("Deleting existing verification tokens for user: {}", email);
         verificationTokenRepository.deleteByUser(user);
-        verificationTokenRepository.flush(); // Ensure deletion is committed
-        System.out.println("Existing verification tokens deleted for user: " + email);
+        verificationTokenRepository.flush();
 
-        // Generate and save new token
         String token = UUID.randomUUID().toString();
         VerificationToken verificationToken = new VerificationToken(
                 token,
                 user,
                 LocalDateTime.now().plusHours(24)
         );
-        System.out.println("Saving new verification token: " + token);
-        verificationTokenRepository.saveAndFlush(verificationToken); // Ensure save is committed
-        System.out.println("New verification token saved for user: " + email);
+        logger.info("Saving new verification token for user: {}", email);
+        verificationTokenRepository.saveAndFlush(verificationToken);
 
-        // Send verification email
         emailService.sendVerificationEmail(
                 user.getEmail(),
                 user.getName() != null ? user.getName().split(" ")[0] : "",
                 token
         );
-        System.out.println("Verification email sent to: " + email);
+        logger.info("Verification email resent to: {}", email);
     }
 
     private boolean isEmailDomainValid(String email) {
@@ -214,6 +209,7 @@ public class AuthService {
             String domain = email.substring(email.indexOf('@') + 1);
             return domain.matches("^([a-z0-9]+(-[a-z0-9]+)*\\.)+[a-z]{2,}$");
         } catch (Exception e) {
+            logger.warn("Invalid email domain: {}", email, e);
             return false;
         }
     }
@@ -257,6 +253,7 @@ public class AuthService {
 
         GoogleIdToken idToken = verifier.verify(idTokenString);
         if (idToken == null) {
+            logger.warn("Invalid Google ID token");
             throw new RuntimeException("Invalid Google ID token");
         }
 
@@ -265,7 +262,7 @@ public class AuthService {
         String name = (String) payload.get("name");
         String picture = (String) payload.get("picture");
 
-        System.out.println("Google profile picture URL: " + picture);
+        logger.info("Google login for email: {}, name: {}, picture: {}", email, name, picture);
 
         Optional<User> existingUserOpt = userRepository.findByEmail(email);
         User user;
@@ -282,7 +279,6 @@ public class AuthService {
                 user.setPassword(passwordEncoder.encode("GOOGLE_AUTH_" + System.currentTimeMillis()));
             }
             user.setEmailVerified(true);
-            userRepository.save(user);
         } else {
             user = new User();
             user.setEmail(email);
@@ -291,8 +287,9 @@ public class AuthService {
             user.setPassword(passwordEncoder.encode("GOOGLE_AUTH_" + System.currentTimeMillis()));
             user.setGoogleAuth(true);
             user.setEmailVerified(true);
-            userRepository.save(user);
+            user.setRole(User.Role.BASIC);
         }
+        userRepository.save(user);
 
         String token = jwtUtil.generateToken(user.getEmail());
         return new AuthResponse(
@@ -318,7 +315,7 @@ public class AuthService {
             Lookup lookup = new Lookup(domain, Type.MX);
             Record[] records = lookup.run();
             if (records == null || records.length == 0) {
-                System.out.println("No MX records found for domain: " + domain);
+                logger.warn("No MX records found for domain: {}", domain);
                 return false;
             }
 
@@ -330,7 +327,7 @@ public class AuthService {
                 }
             }
             if (mxRecord == null) {
-                System.out.println("No MXRecord found in records for domain: " + domain);
+                logger.warn("No MXRecord found for domain: {}", domain);
                 return false;
             }
 
@@ -342,7 +339,7 @@ public class AuthService {
 
                 String greeting = reader.readLine();
                 if (greeting == null || !greeting.startsWith("220")) {
-                    System.out.println("Invalid SMTP greeting: " + greeting);
+                    logger.warn("Invalid SMTP greeting: {}", greeting);
                     return false;
                 }
 
@@ -350,7 +347,7 @@ public class AuthService {
                 writer.flush();
                 String heloResponse = reader.readLine();
                 if (heloResponse == null || !heloResponse.startsWith("250")) {
-                    System.out.println("Invalid HELO response: " + heloResponse);
+                    logger.warn("Invalid HELO response: {}", heloResponse);
                     return false;
                 }
 
@@ -358,7 +355,7 @@ public class AuthService {
                 writer.flush();
                 String mailFromResponse = reader.readLine();
                 if (mailFromResponse == null || !mailFromResponse.startsWith("250")) {
-                    System.out.println("Invalid MAIL FROM response: " + mailFromResponse);
+                    logger.warn("Invalid MAIL FROM response: {}", mailFromResponse);
                     return false;
                 }
 
@@ -366,21 +363,21 @@ public class AuthService {
                 writer.flush();
                 String rcptToResponse = reader.readLine();
                 if (rcptToResponse == null) {
-                    System.out.println("No response for RCPT TO");
+                    logger.warn("No response for RCPT TO");
                     return false;
                 }
 
                 boolean isValid = rcptToResponse.startsWith("250");
                 if (!isValid) {
-                    System.out.println("RCPT TO response indicates email does not exist: " + rcptToResponse);
+                    logger.warn("RCPT TO response indicates email does not exist: {}", rcptToResponse);
                 }
                 return isValid;
             }
         } catch (TextParseException e) {
-            System.out.println("Failed to parse domain for MX lookup: " + e.getMessage());
+            logger.warn("Failed to parse domain for MX lookup: {}", e.getMessage(), e);
             return false;
         } catch (Exception e) {
-            System.out.println("Email verification failed for: " + email + ", error: " + e.getMessage());
+            logger.warn("Email verification failed for: {}", email, e);
             return false;
         }
     }

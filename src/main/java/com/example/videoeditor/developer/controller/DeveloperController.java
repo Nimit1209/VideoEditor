@@ -1,5 +1,6 @@
 package com.example.videoeditor.developer.controller;
 
+import com.backblaze.b2.client.exceptions.B2Exception;
 import com.example.videoeditor.dto.ElementDto;
 import com.example.videoeditor.developer.service.GlobalElementService;
 import com.example.videoeditor.security.JwtUtil;
@@ -43,6 +44,8 @@ public class DeveloperController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error uploading elements: " + e.getMessage());
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
+        } catch (B2Exception e) {
+            throw new RuntimeException(e);
         }
     }
 

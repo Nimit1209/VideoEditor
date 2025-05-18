@@ -1,5 +1,6 @@
 package com.example.videoeditor.service;
 
+import com.backblaze.b2.client.exceptions.B2Exception;
 import com.example.videoeditor.PathConfig;
 import com.example.videoeditor.developer.entity.GlobalElement;
 import com.example.videoeditor.developer.repository.GlobalElementRepository;
@@ -11,7 +12,6 @@ import com.example.videoeditor.repository.ProjectRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +19,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-import org.apache.commons.io.FileUtils;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
@@ -29,9 +28,6 @@ import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.text.DecimalFormat;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -47,9 +43,10 @@ public class VideoEditingService {
     private final Map<String, EditSession> activeSessions;
     private final GlobalElementRepository globalElementRepository;
 
+    private final BackblazeB2Service backblazeB2Service;
     private final PathConfig pathConfig; // Add PathConfig field
-    private final S3Service s3Service; // Add S3Service
 
+    private static final Logger logger = LoggerFactory.getLogger(VideoEditingService.class);
 
     @Value("${ffmpeg.path:/usr/local/bin/ffmpeg}")
     private String ffmpegPath;
@@ -61,16 +58,16 @@ public class VideoEditingService {
     @Value("${ffprobe.path:/usr/bin/ffprobe}")
     private String ffprobePath;
 
-        public VideoEditingService(
-                ProjectRepository projectRepository,
-                ObjectMapper objectMapper, GlobalElementRepository globalElementRepository, PathConfig pathConfig, S3Service s3Service
-        ) {
+    public VideoEditingService(
+            ProjectRepository projectRepository,
+            ObjectMapper objectMapper, GlobalElementRepository globalElementRepository, BackblazeB2Service backblazeB2Service, PathConfig pathConfig
+    ) {
             this.projectRepository = projectRepository;
             this.objectMapper = objectMapper;
             this.globalElementRepository = globalElementRepository;
-            this.pathConfig = pathConfig;
-            this.s3Service = s3Service;
-            this.activeSessions = new ConcurrentHashMap<>();
+        this.backblazeB2Service = backblazeB2Service;
+        this.pathConfig = pathConfig;
+        this.activeSessions = new ConcurrentHashMap<>();
         }
 
         @Data
@@ -112,9 +109,6 @@ public class VideoEditingService {
                 this.lastAccessTime = lastAccessTime;
             }
         }
-
-
-
 
         // NEW: Helper method to round doubles to three decimal places
         private double roundToThreeDecimals(Double value) {
@@ -313,8 +307,9 @@ public class VideoEditingService {
                 Double timelineEndTime,
                 Double startTime,
                 Double endTime,
-                boolean createAudioSegment
-        ) throws IOException, InterruptedException {
+                boolean createAudioSegment,
+                Double speed
+        ) throws IOException, InterruptedException, B2Exception {
             EditSession session = getSession(sessionId);
             if (session == null) {
                 throw new RuntimeException("No active session found for sessionId: " + sessionId);
@@ -341,8 +336,11 @@ public class VideoEditingService {
             endTime = roundToThreeDecimals(endTime);
             timelineStartTime = roundToThreeDecimals(timelineStartTime);
 
+            // Calculate clip duration
+            double clipDuration = endTime - startTime;
+
             if (timelineEndTime == null) {
-                timelineEndTime = timelineStartTime + (endTime - startTime);
+                timelineEndTime = timelineStartTime + (clipDuration / speed);
             }
             timelineEndTime = roundToThreeDecimals(timelineEndTime);
 
@@ -432,6 +430,7 @@ public class VideoEditingService {
             segment.setCropL(0.0);
             segment.setCropR(0.0);
             segment.setCropT(0.0);
+            segment.setSpeed(speed); // Set default speed
 
             if (audioSegment != null) {
                 segment.setAudioId(audioSegment.getId());
@@ -464,87 +463,178 @@ public class VideoEditingService {
             }
         }
 
-    private Map<String, String> extractAudioFromVideo(String s3VideoKey, Long projectId, String audioFileName) throws IOException, InterruptedException {
-        // Download video from S3
-        File videoFile = s3Service.downloadFile(s3VideoKey);
-        try {
-            File audioDir = new File(baseDir, "audio/projects/" + projectId + "/extracted");
-            if (!audioDir.exists() && !audioDir.mkdirs()) {
-                throw new IOException("Failed to create audio directory: " + audioDir.getAbsolutePath());
+    private Map<String, String> extractAudioFromVideo(String videoPath, Long projectId, String audioFileName) throws IOException, InterruptedException, B2Exception {
+        // Download video from Backblaze B2
+        String tempVideoPath = baseDir + "/temp/video_" + System.currentTimeMillis() + "_" + audioFileName;
+        File videoFile = backblazeB2Service.downloadFile(videoPath, tempVideoPath);
+        if (!videoFile.exists()) {
+            throw new IOException("Video file not found: " + videoFile.getAbsolutePath());
+        }
+        if (!videoFile.canRead()) {
+            throw new IOException("Video file is not readable: " + videoFile.getAbsolutePath());
+        }
+
+        // Prepare temporary audio file
+        String tempAudioPath = baseDir + "/temp/audio_" + System.currentTimeMillis() + "_" + audioFileName;
+        File audioFile = new File(tempAudioPath);
+        if (!audioFile.getParentFile().exists()) {
+            audioFile.getParentFile().mkdirs();
+        }
+
+        String relativePath = "audio/projects/" + projectId + "/extracted/" + audioFileName;
+        String waveformJsonPath = null;
+
+        // Check if audio stream exists using ffprobe
+        List<String> probeCommand = new ArrayList<>();
+        probeCommand.add(ffmpegPath.replace("ffmpeg", "ffprobe"));
+        probeCommand.add("-v");
+        probeCommand.add("error");
+        probeCommand.add("-show_streams");
+        probeCommand.add("-select_streams");
+        probeCommand.add("a");
+        probeCommand.add("-of");
+        probeCommand.add("json");
+        probeCommand.add(videoFile.getAbsolutePath());
+
+        ProcessBuilder probeBuilder = new ProcessBuilder(probeCommand);
+        probeBuilder.redirectErrorStream(true);
+        Process probeProcess = probeBuilder.start();
+        StringBuilder probeOutput = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(probeProcess.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                probeOutput.append(line);
             }
+        }
+        int probeExitCode = probeProcess.waitFor();
+        if (probeExitCode != 0) {
+            Files.deleteIfExists(videoFile.toPath());
+            throw new IOException("Failed to probe video for audio streams: " + videoPath);
+        }
 
-            String cleanAudioFileName = "extracted_" + audioFileName.replaceAll("[^a-zA-Z0-9.]", "_") + ".mp3";
-            File audioFile = new File(audioDir, cleanAudioFileName);
-
-            // FFmpeg command to extract audio
-            List<String> command = new ArrayList<>();
-            command.add(ffmpegPath);
-            command.add("-i");
-            command.add(videoFile.getAbsolutePath());
-            command.add("-vn");
-            command.add("-acodec");
-            command.add("mp3");
-            command.add("-y");
-            command.add(audioFile.getAbsolutePath());
-
-            executeFFmpegCommand(command);
-
-            // Upload audio to S3
-            String s3AudioKey = "audio/projects/" + projectId + "/extracted/" + cleanAudioFileName;
-            String s3AudioPath = s3Service.uploadFile(audioFile, s3AudioKey);
-
-            // Generate waveform JSON
-            String waveformJsonPath = generateAndSaveWaveformJson(s3AudioPath, projectId);
-
-            // Update project
-            Project project = projectRepository.findById(projectId)
-                    .orElseThrow(() -> new RuntimeException("Project not found"));
-            addExtractedAudio(project, s3AudioPath, cleanAudioFileName, s3VideoKey, waveformJsonPath);
-            projectRepository.save(project);
-
+        // Parse ffprobe output
+        Map<String, Object> probeData = objectMapper.readValue(probeOutput.toString(), new TypeReference<>() {});
+        List<Map<String, Object>> streams = (List<Map<String, Object>>) probeData.getOrDefault("streams", new ArrayList<>());
+        if (streams.isEmpty()) {
+            Files.deleteIfExists(videoFile.toPath());
             Map<String, String> result = new HashMap<>();
-            result.put("audioPath", s3AudioPath);
-            result.put("waveformJsonPath", waveformJsonPath);
+            result.put("audioPath", null);
+            result.put("waveformJsonPath", null);
             return result;
+        }
+
+        // Extract audio
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+        command.add("-i");
+        command.add(videoFile.getAbsolutePath());
+        command.add("-vn");
+        command.add("-acodec");
+        command.add("mp3");
+        command.add("-y");
+        command.add(audioFile.getAbsolutePath());
+
+        executeFFmpegCommand(command);
+
+        // Upload audio to Backblaze B2
+        if (audioFile.exists()) {
+            backblazeB2Service.uploadFile(audioFile, relativePath);
+            waveformJsonPath = generateAndSaveWaveformJson(relativePath, projectId);
+        } else {
+            Files.deleteIfExists(videoFile.toPath());
+            Map<String, String> result = new HashMap<>();
+            result.put("audioPath", null);
+            result.put("waveformJsonPath", null);
+            return result;
+        }
+
+        // Clean up temporary files
+        Files.deleteIfExists(videoFile.toPath());
+        Files.deleteIfExists(audioFile.toPath());
+
+        // Update project
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found"));
+        addExtractedAudio(project, relativePath, audioFileName, videoPath, waveformJsonPath);
+        projectRepository.save(project);
+
+        Map<String, String> result = new HashMap<>();
+        result.put("audioPath", relativePath);
+        result.put("waveformJsonPath", waveformJsonPath);
+        return result;
+    }
+    private double getVideoDuration(String videoPath) throws IOException, InterruptedException, B2Exception {
+        String tempPath = baseDir + "/temp/video_" + System.currentTimeMillis() + ".mp4";
+        File tempFile = backblazeB2Service.downloadFile(videoPath, tempPath);
+
+        ProcessBuilder builder = new ProcessBuilder(
+                ffmpegPath, "-i", tempFile.getAbsolutePath()
+        );
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+        }
+
+        int exitCode = process.waitFor();
+        Files.deleteIfExists(tempFile.toPath());
+
+        String outputStr = output.toString();
+        int durationIndex = outputStr.indexOf("Duration:");
+        if (durationIndex >= 0) {
+            String durationStr = outputStr.substring(durationIndex + 10, outputStr.indexOf(",", durationIndex)).trim();
+            String[] parts = durationStr.split(":");
+            if (parts.length == 3) {
+                double hours = Double.parseDouble(parts[0]);
+                double minutes = Double.parseDouble(parts[1]);
+                double seconds = Double.parseDouble(parts[2]);
+                return roundToThreeDecimals(hours * 3600 + minutes * 60 + seconds);
+            }
+        }
+        return 300; // Default to 5 minutes
+    }
+
+    // Private method for internal use with B2 paths
+    private double getAudioDuration(String audioPath) throws IOException, InterruptedException, B2Exception {
+        String tempPath = baseDir + "/temp/audio_" + System.currentTimeMillis() + ".mp3";
+        File tempFile = backblazeB2Service.downloadFile(audioPath, tempPath);
+        try {
+            return getAudioDurationFromFile(tempFile);
         } finally {
-            // Clean up temporary files
-            videoFile.delete();
+            Files.deleteIfExists(tempFile.toPath());
         }
     }
 
-        private double getVideoDuration(String videoPath) throws IOException, InterruptedException {
-            String fullPath = baseDir + "/videos/" + videoPath;
-            ProcessBuilder builder = new ProcessBuilder(
-                    ffmpegPath, "-i", fullPath
-            );
-            builder.redirectErrorStream(true);
-            Process process = builder.start();
+    // Helper method to get duration from a File using ffprobe
+    private double getAudioDurationFromFile(File audioFile) throws IOException, InterruptedException {
+        logger.info("Extracting duration for file: {}", audioFile.getAbsolutePath());
 
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
+        ProcessBuilder builder = new ProcessBuilder(
+                ffprobePath,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                audioFile.getAbsolutePath()
+        );
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
 
-            int exitCode = process.waitFor();
-            String outputStr = output.toString();
-            int durationIndex = outputStr.indexOf("Duration:");
-            if (durationIndex >= 0) {
-                String durationStr = outputStr.substring(durationIndex + 10, outputStr.indexOf(",", durationIndex)).trim();
-                String[] parts = durationStr.split(":");
-                if (parts.length == 3) {
-                    double hours = Double.parseDouble(parts[0]);
-                    double minutes = Double.parseDouble(parts[1]);
-                    double seconds = Double.parseDouble(parts[2]);
-                    // MODIFIED: Round duration to three decimal places
-                    return roundToThreeDecimals(hours * 3600 + minutes * 60 + seconds);
-                }
-            }
-            return 300; // Default to 5 minutes
+        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        String duration = reader.readLine();
+        int exitCode = process.waitFor();
+
+        if (exitCode != 0 || duration == null) {
+            throw new IOException("Failed to get audio duration for file: " + audioFile.getAbsolutePath());
         }
 
+        double durationSeconds = Double.parseDouble(duration);
+        return roundToThreeDecimals(durationSeconds);
+    }
         public void updateVideoSegment(
                 String sessionId,
                 String segmentId,
@@ -557,12 +647,13 @@ public class VideoEditingService {
                 Double timelineEndTime,
                 Double startTime,
                 Double endTime,
-                Double cropL, // New parameter
-                Double cropR, // New parameter
-                Double cropT, // New parameter
-                Double cropB, // New parameter
+                Double cropL,
+                Double cropR,
+                Double cropT,
+                Double cropB,
+                Double speed, // New parameter
                 Map<String, List<Keyframe>> keyframes
-        ) throws IOException, InterruptedException {
+        ) throws IOException, InterruptedException, B2Exception {
             EditSession session = getSession(sessionId);
             VideoSegment segmentToUpdate = null;
             for (VideoSegment segment : session.getTimelineState().getSegments()) {
@@ -585,6 +676,7 @@ public class VideoEditingService {
             Double originalCropR = segmentToUpdate.getCropR();
             Double originalCropT = segmentToUpdate.getCropT();
             Double originalCropB = segmentToUpdate.getCropB();
+            Double originalSpeed = segmentToUpdate.getSpeed();
 
             boolean timelineOrLayerChanged = false;
 
@@ -610,6 +702,14 @@ public class VideoEditingService {
             }
             if (effectiveCropT + effectiveCropB >= 100) {
                 throw new IllegalArgumentException("Total crop percentage (top + bottom) must be less than 100");
+            }
+
+            // Validate speed
+            if (speed != null) {
+                if (speed < 0.1 || speed > 5.0) {
+                    throw new IllegalArgumentException("Speed must be between 0.1 and 5.0");
+                }
+                segmentToUpdate.setSpeed(speed);
             }
 
             if (keyframes != null && !keyframes.isEmpty()) {
@@ -675,13 +775,33 @@ public class VideoEditingService {
             if (cropT != null) segmentToUpdate.setCropT(cropT);
             if (cropB != null) segmentToUpdate.setCropB(cropB);
 
-            // Ensure timeline duration reflects rounded values
-            double newTimelineDuration = roundToThreeDecimals(segmentToUpdate.getTimelineEndTime() - segmentToUpdate.getTimelineStartTime());
-            double newClipDuration = roundToThreeDecimals(segmentToUpdate.getEndTime() - segmentToUpdate.getStartTime());
-            if (newTimelineDuration < newClipDuration) {
-                segmentToUpdate.setTimelineEndTime(roundToThreeDecimals(segmentToUpdate.getTimelineStartTime() + newClipDuration));
-            }
+            // Adjust timelineEndTime based on speed
+            double newStartTime = startTime != null ? startTime : segmentToUpdate.getStartTime();
+            double newEndTime = endTime != null ? endTime : segmentToUpdate.getEndTime();
+            double newClipDuration = roundToThreeDecimals(newEndTime - newStartTime);
+            double effectiveSpeed = speed != null ? speed : originalSpeed;
 
+            // Update timelineEndTime only when speed is increasing
+            if (speed != null && speed > originalSpeed && originalSpeed >= 1.0) {
+                // Update timelineEndTime when speed increases
+                double newTimelineDuration = roundToThreeDecimals(newClipDuration / effectiveSpeed);
+                if (timelineEndTime == null) {
+                    segmentToUpdate.setTimelineEndTime(roundToThreeDecimals(segmentToUpdate.getTimelineStartTime() + newTimelineDuration));
+                } else {
+                    // Ensure provided timelineEndTime matches the expected duration
+                    double providedTimelineDuration = roundToThreeDecimals(timelineEndTime - segmentToUpdate.getTimelineStartTime());
+                    if (Math.abs(providedTimelineDuration - newTimelineDuration) > 0.001) {
+                        segmentToUpdate.setTimelineEndTime(roundToThreeDecimals(segmentToUpdate.getTimelineStartTime() + newTimelineDuration));
+                    }
+                }
+            } else {
+                // When speed decreases or stays the same, keep timelineEndTime unless explicitly provided
+                if (timelineEndTime == null && (startTime != null || endTime != null)) {
+                    // Recalculate timelineEndTime based on new clip duration only if startTime or endTime changed
+                    double newTimelineDuration = roundToThreeDecimals(newClipDuration / effectiveSpeed);
+                    segmentToUpdate.setTimelineEndTime(roundToThreeDecimals(segmentToUpdate.getTimelineStartTime() + newTimelineDuration));
+                }
+            }
 
             // Validate timeline position with rounded values
             TimelineState timelineState = session.getTimelineState();
@@ -702,6 +822,7 @@ public class VideoEditingService {
                 segmentToUpdate.setCropR(originalCropR);
                 segmentToUpdate.setCropT(originalCropT);
                 segmentToUpdate.setCropB(originalCropB);
+                segmentToUpdate.setSpeed(originalSpeed);
                 throw new RuntimeException("Timeline position overlaps with an existing segment in layer " + segmentToUpdate.getLayer());
             }
 
@@ -718,6 +839,7 @@ public class VideoEditingService {
 
             session.setLastAccessTime(System.currentTimeMillis());
         }
+
         public VideoSegment getVideoSegment(String sessionId, String segmentId) {
             EditSession session = getSession(sessionId);
             for (VideoSegment segment : session.getTimelineState().getSegments()) {
@@ -902,7 +1024,7 @@ public class VideoEditingService {
             session.setLastAccessTime(System.currentTimeMillis());
         }
 
-    public Project uploadAudioToProject(User user, Long projectId, MultipartFile[] audioFiles, String[] audioFileNames) throws IOException, InterruptedException {
+    public Project uploadAudioToProject(User user, Long projectId, MultipartFile[] audioFiles, String[] audioFileNames) throws IOException, InterruptedException, B2Exception {
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
@@ -917,18 +1039,23 @@ public class VideoEditingService {
                     ? audioFileNames[i]
                     : projectId + "_" + System.currentTimeMillis() + "_" + originalFileName;
 
-            // Upload to S3
-            String s3Key = "audio/projects/" + projectId + "/" + uniqueFileName;
-            String s3Path = s3Service.uploadFile(audioFile, s3Key);
+            // Save to temporary file
+            String tempPath = baseDir + "/temp/" + uniqueFileName;
+            File tempFile = backblazeB2Service.saveMultipartFileToTemp(audioFile, tempPath);
+
+            // Upload to Backblaze B2
+            String b2Path = "audio/projects/" + projectId + "/" + uniqueFileName;
+            backblazeB2Service.uploadFile(tempFile, b2Path);
+
+            // Clean up temporary file
+            Files.deleteIfExists(tempFile.toPath());
 
             // Generate and save waveform JSON
-            String waveformJsonPath = generateAndSaveWaveformJson(s3Path, projectId);
+            String waveformJsonPath = generateAndSaveWaveformJson(b2Path, projectId);
 
             try {
-                addAudio(project, s3Path, uniqueFileName, waveformJsonPath);
+                addAudio(project, b2Path, uniqueFileName, waveformJsonPath);
             } catch (JsonProcessingException e) {
-                // Delete from S3 if JSON processing fails
-                s3Service.deleteFile(s3Key);
                 throw new IOException("Failed to process audio data for file: " + uniqueFileName, e);
             }
         }
@@ -936,6 +1063,7 @@ public class VideoEditingService {
         project.setLastModified(LocalDateTime.now());
         return projectRepository.save(project);
     }
+
         public void addAudioToTimelineFromProject(
                 User user,
                 String sessionId,
@@ -945,7 +1073,7 @@ public class VideoEditingService {
                 Double endTime,
                 double timelineStartTime,
                 Double timelineEndTime,
-                String audioFileName) throws IOException, InterruptedException {
+                String audioFileName) throws IOException, InterruptedException, B2Exception {
             if (layer >= 0) {
                 throw new RuntimeException("Audio layers must be negative (e.g., -1, -2, -3)");
             }
@@ -1007,7 +1135,7 @@ public class VideoEditingService {
                 double endTime,
                 double timelineStartTime,
                 Double timelineEndTime,
-                boolean isExtracted) throws IOException, InterruptedException {
+                boolean isExtracted) throws IOException, InterruptedException, B2Exception {
             if (layer >= 0) {
                 throw new RuntimeException("Audio layers must be negative (e.g., -1, -2, -3)");
             }
@@ -1082,7 +1210,7 @@ public class VideoEditingService {
                 Double timelineEndTime,
                 Double volume,
                 Integer layer,
-                Map<String, List<Keyframe>> keyframes) throws IOException, InterruptedException {
+                Map<String, List<Keyframe>> keyframes) throws IOException, InterruptedException, B2Exception {
             EditSession session = getSession(sessionId);
             TimelineState timelineState = session.getTimelineState();
 
@@ -1135,7 +1263,7 @@ public class VideoEditingService {
                 targetSegment.setLayer(layer);
             }
             if (volume != null) {
-                if (volume < 0 || volume > 1) throw new RuntimeException("Volume must be between 0.0 and 1.0");
+                if (volume < 0 || volume > 15) throw new RuntimeException("Volume must be between 0.0 and 15.0");
                 targetSegment.setVolume(volume);
             }
 
@@ -1220,79 +1348,42 @@ public class VideoEditingService {
             session.setLastAccessTime(System.currentTimeMillis());
         }
 
-        private double getAudioDuration(String audioPath) throws IOException, InterruptedException {
-            File audioFile = new File(baseDir, audioPath);
-            if (!audioFile.exists()) {
-                throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
-            }
+    public Project uploadImageToProject(User user, Long projectId, MultipartFile[] imageFiles, String[] imageFileNames) throws IOException, B2Exception {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
 
-            ProcessBuilder builder = new ProcessBuilder(ffmpegPath, "-i", audioFile.getAbsolutePath());
-            builder.redirectErrorStream(true);
-            Process process = builder.start();
-
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-
-            int exitCode = process.waitFor();
-            String outputStr = output.toString();
-            int durationIndex = outputStr.indexOf("Duration:");
-            if (durationIndex >= 0) {
-                String durationStr = outputStr.substring(durationIndex + 10, outputStr.indexOf(",", durationIndex)).trim();
-                String[] parts = durationStr.split(":");
-                if (parts.length == 3) {
-                    double hours = Double.parseDouble(parts[0]);
-                    double minutes = Double.parseDouble(parts[1]);
-                    double seconds = Double.parseDouble(parts[2]);
-                    // MODIFIED: Round duration to three decimal places
-                    return roundToThreeDecimals(hours * 3600 + minutes * 60 + seconds);
-                }
-            }
-            return 300; // Default to 5 minutes
+        if (!project.getUser().getId().equals(user.getId())) {
+            throw new RuntimeException("Unauthorized to modify this project");
         }
 
-        public Project uploadImageToProject(User user, Long projectId, MultipartFile[] imageFiles, String[] imageFileNames) throws IOException {
-            Project project = projectRepository.findById(projectId)
-                    .orElseThrow(() -> new RuntimeException("Project not found with ID: " + projectId));
+        for (int i = 0; i < imageFiles.length; i++) {
+            MultipartFile imageFile = imageFiles[i];
+            String originalFileName = imageFile.getOriginalFilename();
+            String uniqueFileName = (imageFileNames != null && i < imageFileNames.length && imageFileNames[i] != null)
+                    ? imageFileNames[i]
+                    : projectId + "_" + System.currentTimeMillis() + "_" + originalFileName;
 
-            if (!project.getUser().getId().equals(user.getId())) {
-                throw new RuntimeException("Unauthorized to modify this project");
+            // Save to temporary file
+            String tempPath = baseDir + "/temp/" + uniqueFileName;
+            File tempFile = backblazeB2Service.saveMultipartFileToTemp(imageFile, tempPath);
+
+            // Upload to Backblaze B2
+            String b2Path = "images/projects/" + projectId + "/" + uniqueFileName;
+            backblazeB2Service.uploadFile(tempFile, b2Path);
+
+            // Clean up temporary file
+            Files.deleteIfExists(tempFile.toPath());
+
+            try {
+                addImage(project, b2Path, uniqueFileName);
+            } catch (JsonProcessingException e) {
+                throw new IOException("Failed to process image data for file: " + uniqueFileName, e);
             }
-
-            File projectImageDir = new File(baseDir, "images/projects/" + projectId);
-            if (!projectImageDir.exists()) {
-                projectImageDir.mkdirs();
-            }
-
-            List<String> relativePaths = new ArrayList<>();
-            for (int i = 0; i < imageFiles.length; i++) {
-                MultipartFile imageFile = imageFiles[i];
-                String originalFileName = imageFile.getOriginalFilename();
-                // Use provided file name or generate a unique one
-                String uniqueFileName = (imageFileNames != null && i < imageFileNames.length && imageFileNames[i] != null)
-                        ? imageFileNames[i]
-                        : projectId + "_" + System.currentTimeMillis() + "_" + originalFileName;
-
-                File destinationFile = new File(projectImageDir, uniqueFileName);
-                imageFile.transferTo(destinationFile);
-
-                String relativePath = "images/projects/" + projectId + "/" + uniqueFileName;
-                relativePaths.add(relativePath);
-
-                try {
-                    addImage(project, relativePath, uniqueFileName);
-                } catch (JsonProcessingException e) {
-                    throw new IOException("Failed to process image data for file: " + uniqueFileName, e);
-                }
-            }
-
-            project.setLastModified(LocalDateTime.now());
-            return projectRepository.save(project);
         }
+
+        project.setLastModified(LocalDateTime.now());
+        return projectRepository.save(project);
+    }
 
         public void addImageToTimelineFromProject(
                 User user,
@@ -1745,31 +1836,27 @@ public class VideoEditingService {
             session.setLastAccessTime(System.currentTimeMillis());
         }
 
-        public void deleteProjectFiles(Long projectId) throws IOException {
+    public void deleteProjectFiles(Long projectId) throws IOException {
+        try {
             // Delete videos
-            File videoDir = new File(baseDir, "videos/projects/" + projectId);
-            if (videoDir.exists()) {
-                FileUtils.deleteDirectory(videoDir);
-            }
+            String videoPrefix = "videos/projects/" + projectId + "/";
+            backblazeB2Service.deleteFile(videoPrefix);
 
             // Delete audio and waveform JSON
-            File audioDir = new File(baseDir, "audio/projects/" + projectId);
-            if (audioDir.exists()) {
-                FileUtils.deleteDirectory(audioDir);
-            }
+            String audioPrefix = "audio/projects/" + projectId + "/";
+            backblazeB2Service.deleteFile(audioPrefix);
 
             // Delete images
-            File imageDir = new File(baseDir, "images/projects/" + projectId);
-            if (imageDir.exists()) {
-                FileUtils.deleteDirectory(imageDir);
-            }
+            String imagePrefix = "images/projects/" + projectId + "/";
+            backblazeB2Service.deleteFile(imagePrefix);
 
             // Delete exported videos
-            File exportDir = new File(baseDir, "exports/" + projectId);
-            if (exportDir.exists()) {
-                FileUtils.deleteDirectory(exportDir);
-            }
+            String exportPrefix = "exports/" + projectId + "/";
+            backblazeB2Service.deleteFile(exportPrefix);
+        } catch (B2Exception e) {
+            throw new IOException("Failed to delete project files from Backblaze B2", e);
         }
+    }
 
         private void deleteDirectory(File directory) throws IOException {
             if (directory.isDirectory()) {
@@ -2081,246 +2168,263 @@ public class VideoEditingService {
             return "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
         }
 
-        public double getAudioDuration(Long projectId, String filename) throws IOException, InterruptedException {
-            String baseDir = System.getProperty("user.dir");
-            // Define both possible paths
-            String extractedPath = Paths.get(baseDir, "audio/projects", String.valueOf(projectId), "extracted", filename).toString();
-            String directPath = Paths.get(baseDir, "audio/projects", String.valueOf(projectId), filename).toString();
+    // Public method for controller to get duration using projectId and filename
+    public double getAudioDuration(Long projectId, String filename) throws IOException, InterruptedException, B2Exception {
+        logger.info("Getting audio duration for projectId: {}, filename: {}", projectId, filename);
 
-            // Try extracted path first, then direct path
-            String[] possiblePaths = {extractedPath, directPath};
-            String validPath = null;
+        // Construct possible B2 paths
+        String directPath = "audio/projects/" + projectId + "/" + filename;
+        String extractedPath = "audio/projects/" + projectId + "/extracted/" + filename;
 
-            for (String path : possiblePaths) {
-                File audioFile = new File(path);
-                if (audioFile.exists()) {
-                    validPath = path;
+        String[] possiblePaths = {directPath, extractedPath};
+        File tempFile = null;
+        String tempPath = baseDir + "/temp/audio_" + System.currentTimeMillis() + "_" + filename;
+
+        // Try downloading from each path
+        for (String b2Path : possiblePaths) {
+            try {
+                tempFile = backblazeB2Service.downloadFile(b2Path, tempPath);
+                if (tempFile.exists()) {
                     break;
                 }
+            } catch (B2Exception e) {
+                logger.debug("File not found at B2 path: {}", b2Path);
             }
-
-            if (validPath == null) {
-                throw new IOException("Audio file not found at either path for project ID: " + projectId + ", filename: " + filename);
-            }
-
-            ProcessBuilder builder = new ProcessBuilder(
-                    "C:\\Users\\raj.p\\Downloads\\ffmpeg-2025-02-17-git-b92577405b-full_build\\bin\\ffprobe.exe",
-                    "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    validPath
-            );
-
-            System.out.println("Attempting to get duration for audio at path: " + validPath);
-
-            builder.redirectErrorStream(true);
-
-            Process process = builder.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            String duration = reader.readLine();
-            int exitCode = process.waitFor();
-
-            if (exitCode != 0 || duration == null) {
-                throw new IOException("Failed to get audio duration for file: " + filename);
-            }
-
-            return Double.parseDouble(duration);
         }
 
-    private String generateAndSaveWaveformJson(String s3AudioKey, Long projectId) throws IOException, InterruptedException {
-        File audioFile = s3Service.downloadFile(s3AudioKey);
+        if (tempFile == null || !tempFile.exists()) {
+            throw new IOException("Audio file not found for project ID: " + projectId + ", filename: " + filename);
+        }
+
         try {
-            File tempPcmFile = new File(baseDir, "temp/waveform_" + projectId + "_" + System.currentTimeMillis() + ".pcm");
-            File tempDir = new File(baseDir, "temp");
-            if (!tempDir.exists()) {
-                tempDir.mkdirs();
-            }
-
-            // FFmpeg command to extract PCM data
-            List<String> command = new ArrayList<>();
-            command.add(ffmpegPath);
-            command.add("-i");
-            command.add(audioFile.getAbsolutePath());
-            command.add("-f");
-            command.add("s16le");
-            command.add("-ac");
-            command.add("1");
-            command.add("-ar");
-            command.add("44100");
-            command.add("-y");
-            command.add(tempPcmFile.getAbsolutePath());
-
-            executeFFmpegCommand(command);
-
-            // Process PCM data
-            List<Float> peaks = new ArrayList<>();
-            try (FileInputStream fis = new FileInputStream(tempPcmFile)) {
-                byte[] buffer = new byte[4096];
-                int samplesPerPeak = 44100 / 100;
-                int sampleCount = 0;
-                float maxAmplitude = 0;
-
-                while (fis.read(buffer) != -1) {
-                    for (int i = 0; i < buffer.length; i += 2) {
-                        short sample = (short) ((buffer[i] & 0xFF) | (buffer[i + 1] << 8));
-                        float amplitude = Math.abs(sample / 32768.0f);
-                        maxAmplitude = Math.max(maxAmplitude, amplitude);
-                        sampleCount++;
-
-                        if (sampleCount >= samplesPerPeak) {
-                            peaks.add(maxAmplitude);
-                            maxAmplitude = 0;
-                            sampleCount = 0;
-                        }
-                    }
-                    if (sampleCount > 0) {
-                        peaks.add(maxAmplitude);
-                    }
-                }
-            } finally {
-                tempPcmFile.delete();
-            }
-
-            // Create JSON
-            Map<String, Object> waveformData = new HashMap<>();
-            waveformData.put("sampleRate", 100);
-            waveformData.put("peaks", peaks);
-
-            // Save JSON locally and upload to S3
-            File waveformDir = new File(baseDir, "audio/projects/" + projectId + "/waveforms");
-            if (!waveformDir.exists()) {
-                waveformDir.mkdirs();
-            }
-            String waveformFileName = "waveform_" + audioFile.getName().replaceAll("[^a-zA-Z0-9.]", "_") + ".json";
-            File waveformFile = new File(waveformDir, waveformFileName);
-            objectMapper.writeValue(waveformFile, waveformData);
-
-            // Upload to S3
-            String s3WaveformKey = "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
-            s3Service.uploadFile(waveformFile, s3WaveformKey);
-
-            waveformFile.delete();
-            return s3WaveformKey;
+            return getAudioDurationFromFile(tempFile);
         } finally {
-            audioFile.delete();
+            Files.deleteIfExists(tempFile.toPath());
+            logger.debug("Cleaned up temporary file: {}", tempPath);
         }
     }
-        public File exportProject(String sessionId) throws IOException, InterruptedException {
-            EditSession session = getSession(sessionId);
 
-            // Check if session exists
-            if (session == null) {
-                throw new RuntimeException("No active session found for sessionId: " + sessionId);
-            }
-
-            // Get project details
-            Project project = projectRepository.findById(session.getProjectId())
-                    .orElseThrow(() -> new RuntimeException("Project not found"));
-
-            // Create default output path
-            String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "_") + "_"
-                    + System.currentTimeMillis() + ".mp4";
-            String outputPath = "exports/" + outputFileName;
-
-            // Ensure exports directory exists
-            File exportsDir = new File("exports");
-            if (!exportsDir.exists()) {
-                exportsDir.mkdirs();
-            }
-
-            // Render the final video
-            String exportedVideoPath = renderFinalVideo(session.getTimelineState(), outputPath, project.getWidth(), project.getHeight(), project.getFps());
-
-            // Update project status to exported
-            project.setStatus("EXPORTED");
-            project.setLastModified(LocalDateTime.now());
-            project.setExportedVideoPath(exportedVideoPath);
-
-            try {
-                project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
-            } catch (JsonProcessingException e) {
-                System.err.println("Error saving timeline state: " + e.getMessage());
-                // Continue with export even if saving timeline state fails
-            }
-
-            projectRepository.save(project);
-
-            System.out.println("Project successfully exported to: " + exportedVideoPath);
-
-            // Return the File object as per your original implementation
-            return new File(exportedVideoPath);
+    private String generateAndSaveWaveformJson(String audioPath, Long projectId) throws IOException, InterruptedException, B2Exception {
+        // Download audio from Backblaze B2
+        String tempAudioPath = baseDir + "/temp/waveform_" + System.currentTimeMillis() + ".mp3";
+        File audioFile = backblazeB2Service.downloadFile(audioPath, tempAudioPath);
+        if (!audioFile.exists()) {
+            throw new IOException("Audio file not found: " + audioFile.getAbsolutePath());
         }
 
-        private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight, Float fps)
-                throws IOException, InterruptedException {
-            System.out.println("Rendering final video to: " + outputPath);
+        // Generate PCM data
+        File tempPcmFile = new File(baseDir, "temp/waveform_" + projectId + "_" + System.currentTimeMillis() + ".pcm");
+        File tempDir = new File(baseDir, "temp");
+        if (!tempDir.exists()) {
+            tempDir.mkdirs();
+        }
 
-            if (timelineState.getCanvasWidth() != null) canvasWidth = timelineState.getCanvasWidth();
-            if (timelineState.getCanvasHeight() != null) canvasHeight = timelineState.getCanvasHeight();
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+        command.add("-i");
+        command.add(audioFile.getAbsolutePath());
+        command.add("-f");
+        command.add("s16le");
+        command.add("-ac");
+        command.add("1");
+        command.add("-ar");
+        command.add("44100");
+        command.add("-y");
+        command.add(tempPcmFile.getAbsolutePath());
 
-            File tempDir = new File("temp");
-            if (!tempDir.exists()) tempDir.mkdirs();
+        executeFFmpegCommand(command);
 
-            double totalDuration = Math.max(
-                    timelineState.getSegments().stream().mapToDouble(VideoSegment::getTimelineEndTime).max().orElse(0.0),
-                    Math.max(
-                            timelineState.getImageSegments().stream().mapToDouble(ImageSegment::getTimelineEndTime).max().orElse(0.0),
-                            Math.max(
-                                    timelineState.getTextSegments().stream().mapToDouble(TextSegment::getTimelineEndTime).max().orElse(0.0),
-                                    timelineState.getAudioSegments().stream().mapToDouble(AudioSegment::getTimelineEndTime).max().orElse(0.0)
-                            )
-                    )
-            );
-            System.out.println("Total video duration: " + totalDuration + " seconds");
+        // Read PCM data and compute peaks
+        List<Float> peaks = new ArrayList<>();
+        try (FileInputStream fis = new FileInputStream(tempPcmFile)) {
+            byte[] buffer = new byte[4096];
+            int samplesPerPeak = 44100 / 100;
+            int sampleCount = 0;
+            float maxAmplitude = 0;
 
-            List<String> command = new ArrayList<>();
-            command.add(ffmpegPath);
+            while (fis.read(buffer) != -1) {
+                for (int i = 0; i < buffer.length; i += 2) {
+                    short sample = (short) ((buffer[i] & 0xFF) | (buffer[i + 1] << 8));
+                    float amplitude = Math.abs(sample / 32768.0f);
+                    maxAmplitude = Math.max(maxAmplitude, amplitude);
+                    sampleCount++;
 
-            StringBuilder filterComplex = new StringBuilder();
-            Map<String, String> videoInputIndices = new HashMap<>();
-            Map<String, String> audioInputIndices = new HashMap<>();
-            Map<String, String> textInputIndices = new HashMap<>(); // Add this
-            List<File> tempTextFiles = new ArrayList<>(); // Add this
-            int inputCount = 0;
-
-            filterComplex.append("color=c=black:s=").append(canvasWidth).append("x").append(canvasHeight)
-                    .append(":d=").append(totalDuration).append("[base];");
-
-            for (VideoSegment vs : timelineState.getSegments()) {
-                command.add("-i");
-                command.add(baseDir + "\\videos\\" + vs.getSourceVideoPath());
-                videoInputIndices.put(vs.getId(), String.valueOf(inputCount));
-                audioInputIndices.put(vs.getId(), String.valueOf(inputCount));
-                inputCount++;
-            }
-
-            for (ImageSegment is : timelineState.getImageSegments()) {
-                command.add("-loop");
-                command.add("1");
-                command.add("-i");
-                command.add(baseDir + "\\" + is.getImagePath());
-                videoInputIndices.put(is.getId(), String.valueOf(inputCount++));
-            }
-
-            for (AudioSegment as : timelineState.getAudioSegments()) {
-                command.add("-i");
-                command.add(baseDir + "\\" + as.getAudioPath());
-                audioInputIndices.put(as.getId(), String.valueOf(inputCount++));
-            }
-
-            for (TextSegment ts : timelineState.getTextSegments()) {
-                if (ts.getText() == null || ts.getText().trim().isEmpty()) {
-                    System.err.println("Skipping text segment " + ts.getId() + ": empty text");
-                    continue;
+                    if (sampleCount >= samplesPerPeak) {
+                        peaks.add(maxAmplitude);
+                        maxAmplitude = 0;
+                        sampleCount = 0;
+                    }
                 }
-                String textPngPath = generateTextPng(ts, tempDir, canvasWidth, canvasHeight);
-                tempTextFiles.add(new File(textPngPath));
-                command.add("-loop");
-                command.add("1");
-                command.add("-i");
-                command.add(textPngPath);
-                textInputIndices.put(ts.getId(), String.valueOf(inputCount++));
             }
+            if (sampleCount > 0) {
+                peaks.add(maxAmplitude);
+            }
+        } finally {
+            Files.deleteIfExists(tempPcmFile.toPath());
+        }
+
+        // Create JSON structure
+        Map<String, Object> waveformData = new HashMap<>();
+        waveformData.put("sampleRate", 100);
+        waveformData.put("peaks", peaks);
+
+        // Save JSON to temporary file
+        String waveformFileName = "waveform_" + audioFile.getName().replaceAll("[^a-zA-Z0-9.]", "_") + ".json";
+        File waveformFile = new File(baseDir + "/temp/" + waveformFileName);
+        objectMapper.writeValue(waveformFile, waveformData);
+
+        // Upload to Backblaze B2
+        String b2WaveformPath = "audio/projects/" + projectId + "/waveforms/" + waveformFileName;
+        backblazeB2Service.uploadFile(waveformFile, b2WaveformPath);
+
+        // Clean up
+        Files.deleteIfExists(waveformFile.toPath());
+        Files.deleteIfExists(audioFile.toPath());
+
+        return b2WaveformPath;
+    }
+    public String exportProject(String sessionId) throws IOException, InterruptedException, B2Exception {
+        logger.info("Starting video export for session: {}", sessionId);
+
+        EditSession session = getSession(sessionId);
+        if (session == null) {
+            logger.error("No active session found for sessionId: {}", sessionId);
+            throw new RuntimeException("No active session found for sessionId: " + sessionId);
+        }
+
+        // Get project details
+        Project project = projectRepository.findById(session.getProjectId())
+                .orElseThrow(() -> {
+                    logger.error("Project not found for projectId: {}", session.getProjectId());
+                    return new RuntimeException("Project not found");
+                });
+
+        // Create output filename
+        String outputFileName = project.getName().replaceAll("[^a-zA-Z0-9]", "_") + "_"
+                + System.currentTimeMillis() + ".mp4";
+        String localOutputPath = baseDir + "/temp/" + outputFileName;
+        String b2Path = "exports/" + project.getId() + "/" + outputFileName;
+
+        // Render the final video to a temporary local file
+        renderFinalVideo(session.getTimelineState(), localOutputPath, project.getWidth(), project.getHeight(), project.getFps());
+
+        File outputFile = new File(localOutputPath);
+        if (!outputFile.exists()) {
+            logger.error("Rendered video file not found at: {}", localOutputPath);
+            throw new IOException("Rendered video file not found: " + localOutputPath);
+        }
+
+        // Upload to Backblaze B2
+        logger.info("Uploading video to B2 path: {}", b2Path);
+        backblazeB2Service.uploadFile(outputFile, b2Path);
+
+        // Clean up local file
+        try {
+            Files.deleteIfExists(outputFile.toPath());
+            logger.debug("Cleaned up local file: {}", localOutputPath);
+        } catch (IOException e) {
+            logger.warn("Failed to delete local file: {}", localOutputPath, e);
+        }
+
+        // Update project status and B2 path
+        project.setStatus("EXPORTED");
+        project.setLastModified(LocalDateTime.now());
+        project.setExportedVideoPath(b2Path); // Store B2 path
+
+        try {
+            project.setTimelineState(objectMapper.writeValueAsString(session.getTimelineState()));
+        } catch (JsonProcessingException e) {
+            logger.error("Error saving timeline state for projectId: {}", project.getId(), e);
+            // Continue with export
+        }
+
+        projectRepository.save(project);
+        logger.info("Project successfully exported to B2 path: {}", b2Path);
+
+        return b2Path;
+    }
+
+
+    private String renderFinalVideo(TimelineState timelineState, String outputPath, int canvasWidth, int canvasHeight, Float fps)
+            throws IOException, InterruptedException, B2Exception {
+        System.out.println("Rendering final video to: " + outputPath);
+
+        if (timelineState.getCanvasWidth() != null) canvasWidth = timelineState.getCanvasWidth();
+        if (timelineState.getCanvasHeight() != null) canvasHeight = timelineState.getCanvasHeight();
+
+        File tempDir = new File(baseDir, "temp");
+        if (!tempDir.exists()) tempDir.mkdirs();
+
+        double totalDuration = Math.max(
+                timelineState.getSegments().stream().mapToDouble(VideoSegment::getTimelineEndTime).max().orElse(0.0),
+                Math.max(
+                        timelineState.getImageSegments().stream().mapToDouble(ImageSegment::getTimelineEndTime).max().orElse(0.0),
+                        Math.max(
+                                timelineState.getTextSegments().stream().mapToDouble(TextSegment::getTimelineEndTime).max().orElse(0.0),
+                                timelineState.getAudioSegments().stream().mapToDouble(AudioSegment::getTimelineEndTime).max().orElse(0.0)
+                        )
+                )
+        );
+        System.out.println("Total video duration: " + totalDuration + " seconds");
+
+        List<String> command = new ArrayList<>();
+        command.add(ffmpegPath);
+
+        StringBuilder filterComplex = new StringBuilder();
+        Map<String, String> videoInputIndices = new HashMap<>();
+        Map<String, String> audioInputIndices = new HashMap<>();
+        Map<String, String> textInputIndices = new HashMap<>();
+        List<File> tempTextFiles = new ArrayList<>();
+        List<File> tempInputFiles = new ArrayList<>();
+        int inputCount = 0;
+
+        filterComplex.append("color=c=black:s=").append(canvasWidth).append("x").append(canvasHeight)
+                .append(":d=").append(totalDuration).append("[base];");
+
+        for (VideoSegment vs : timelineState.getSegments()) {
+            String tempPath = baseDir + "/temp/video_" + vs.getId() + "_" + System.currentTimeMillis() + ".mp4";
+            File tempFile = backblazeB2Service.downloadFile(vs.getSourceVideoPath(), tempPath);
+            tempInputFiles.add(tempFile);
+            command.add("-i");
+            command.add(tempFile.getAbsolutePath());
+            videoInputIndices.put(vs.getId(), String.valueOf(inputCount));
+            audioInputIndices.put(vs.getId(), String.valueOf(inputCount));
+            inputCount++;
+        }
+
+        for (ImageSegment is : timelineState.getImageSegments()) {
+            String tempPath = baseDir + "/temp/image_" + is.getId() + "_" + System.currentTimeMillis() + ".png";
+            File tempFile = backblazeB2Service.downloadFile(is.getImagePath(), tempPath);
+            tempInputFiles.add(tempFile);
+            command.add("-loop");
+            command.add("1");
+            command.add("-i");
+            command.add(tempFile.getAbsolutePath());
+            videoInputIndices.put(is.getId(), String.valueOf(inputCount++));
+        }
+
+        for (AudioSegment as : timelineState.getAudioSegments()) {
+            String tempPath = baseDir + "/temp/audio_" + as.getId() + "_" + System.currentTimeMillis() + ".mp3";
+            File tempFile = backblazeB2Service.downloadFile(as.getAudioPath(), tempPath);
+            tempInputFiles.add(tempFile);
+            command.add("-i");
+            command.add(tempFile.getAbsolutePath());
+            audioInputIndices.put(as.getId(), String.valueOf(inputCount++));
+        }
+
+        for (TextSegment ts : timelineState.getTextSegments()) {
+            if (ts.getText() == null || ts.getText().trim().isEmpty()) {
+                System.err.println("Skipping text segment " + ts.getId() + ": empty text");
+                continue;
+            }
+            String textPngPath = generateTextPng(ts, tempDir, canvasWidth, canvasHeight);
+            tempTextFiles.add(new File(textPngPath));
+            command.add("-loop");
+            command.add("1");
+            command.add("-i");
+            command.add(textPngPath);
+            textInputIndices.put(ts.getId(), String.valueOf(inputCount++));
+        }
 
             List<Object> allSegments = new ArrayList<>();
             allSegments.addAll(timelineState.getSegments());
@@ -2346,6 +2450,10 @@ public class VideoEditingService {
 
                     filterComplex.append("[").append(inputIdx).append(":v]");
                     filterComplex.append("trim=").append(vs.getStartTime()).append(":").append(vs.getEndTime()).append(",");
+                    // Apply speed adjustment
+                    double speed = vs.getSpeed() != null ? vs.getSpeed() : 1.0;
+                    double speedFactor = 1.0 / speed; // Inverse for setpts: speed > 1 means faster (shorter), speed < 1 means slower (longer)
+                    filterComplex.append("setpts=").append(String.format("%.6f", speedFactor)).append("*PTS,");
                     filterComplex.append("setpts=PTS-STARTPTS+").append(vs.getTimelineStartTime()).append("/TB,");
 
                     // Store crop values before applying crop
@@ -2366,6 +2474,9 @@ public class VideoEditingService {
                     List<Filter> segmentFilters = timelineState.getFilters().stream()
                             .filter(f -> f.getSegmentId().equals(vs.getId()))
                             .collect(Collectors.toList());
+                    boolean hasVignette = false;
+                    double vignetteValue = 0.0;
+
                     for (Filter filter : segmentFilters) {
                         if (filter == null || filter.getFilterName() == null || filter.getFilterName().trim().isEmpty()) {
                             System.err.println("Skipping invalid filter for segment " + vs.getId() + ": null or empty filter name");
@@ -2465,6 +2576,13 @@ public class VideoEditingService {
                                         filterComplex.append("hflip,vflip,");
                                     }
                                     break;
+                                case "vignette":
+                                    double vignette = Double.parseDouble(filterValue);
+                                    if (vignette >= 0 && vignette <= 1 && vignette > 0.01) {
+                                        hasVignette = true;
+                                        vignetteValue = vignette;
+                                    }
+                                    break;
                                 default:
                                     System.err.println("Unsupported filter: " + filterName + " for segment " + vs.getId());
                                     break;
@@ -2473,6 +2591,27 @@ public class VideoEditingService {
                             System.err.println("Invalid filter value for " + filterName + " in segment " + vs.getId() + ": " + filterValue);
                         }
                     }
+
+// Apply vignette filter if present
+                    // With this:
+                    if (hasVignette) {
+                        // Map vignetteValue (0 to 1) to darkening intensity
+                        double intensity = vignetteValue; // 0 (no effect) to 1 (max darkening)
+                        // Compute vignette mask: darken edges based on distance from center
+                        filterComplex.append("format=rgb24,");
+                        filterComplex.append("geq=")
+                                .append("lum='lum(X,Y)*")
+                                .append("(1-").append(String.format("%.6f", intensity)).append("*(1-sqrt(4*((X/W-0.5)^2+(Y/H-0.5)^2))))'")
+                                .append(":cb='cb(X,Y)':cr='cr(X,Y)',");
+                        filterComplex.append("format=yuv420p,");
+                        filterComplex.append("enable='between(t,")
+                                .append(String.format("%.6f", vs.getTimelineStartTime())).append(",")
+                                .append(String.format("%.6f", vs.getTimelineEndTime())).append(")',");
+                        System.out.println("Custom vignette filter applied to video segment " + vs.getId() + ": intensity=" + intensity);
+                    }
+
+// Ensure consistent pixel format before scaling
+                    filterComplex.append("format=yuv420p,");
 
                     // Apply transitions and get position and crop parameters
                     List<Transition> relevantTransitions = timelineState.getTransitions().stream()
@@ -2719,6 +2858,9 @@ public class VideoEditingService {
                     List<Filter> segmentFilters = timelineState.getFilters().stream()
                             .filter(f -> f.getSegmentId().equals(is.getId()))
                             .collect(Collectors.toList());
+                    boolean hasVignette = false;
+                    double vignetteValue = 0.0;
+
                     for (Filter filter : segmentFilters) {
                         if (filter == null || filter.getFilterName() == null || filter.getFilterName().trim().isEmpty()) {
                             System.err.println("Skipping invalid filter for segment " + is.getId() + ": null or empty filter name");
@@ -2818,6 +2960,13 @@ public class VideoEditingService {
                                         filterComplex.append("hflip,vflip,");
                                     }
                                     break;
+                                case "vignette":
+                                    double vignette = Double.parseDouble(filterValue);
+                                    if (vignette >= 0 && vignette <= 1 && vignette > 0.01) {
+                                        hasVignette = true;
+                                        vignetteValue = vignette;
+                                    }
+                                    break;
                                 default:
                                     System.err.println("Unsupported filter: " + filterName + " for segment " + is.getId());
                                     break;
@@ -2826,6 +2975,26 @@ public class VideoEditingService {
                             System.err.println("Invalid filter value for " + filterName + " in segment " + is.getId() + ": " + filterValue);
                         }
                     }
+
+// Apply vignette filter if present
+                    if (hasVignette) {
+                        // Map vignetteValue (0 to 1) to darkening intensity
+                        double intensity = vignetteValue; // 0 (no effect) to 1 (max darkening)
+                        // Compute vignette mask: darken edges based on distance from center
+                        filterComplex.append("format=rgb24,");
+                        filterComplex.append("geq=")
+                                .append("lum='lum(X,Y)*")
+                                .append("(1-").append(String.format("%.6f", intensity)).append("*(1-sqrt(4*((X/W-0.5)^2+(Y/H-0.5)^2))))'")
+                                .append(":cb='cb(X,Y)':cr='cr(X,Y)',");
+                        filterComplex.append("format=yuv420p,");
+                        filterComplex.append("enable='between(t,")
+                                .append(String.format("%.6f", is.getTimelineStartTime())).append(",")
+                                .append(String.format("%.6f", is.getTimelineEndTime())).append(")',");
+                        System.out.println("Custom vignette filter applied to image segment " + is.getId() + ": intensity=" + intensity);
+                    }
+
+// Ensure consistent pixel format before scaling
+                    filterComplex.append("format=yuv420p,");
 
                     // Apply transitions and get position and crop parameters
                     List<Transition> relevantTransitions = timelineState.getTransitions().stream()
@@ -3261,7 +3430,7 @@ public class VideoEditingService {
                             .filter(kf -> {
                                 double time = kf.getTime();
                                 double value = ((Number) kf.getValue()).doubleValue();
-                                boolean valid = time >= 0 && time <= finalTimelineDuration && value >= 0;
+                                boolean valid = time >= 0 && time <= finalTimelineDuration && value >= 0 && value <= 15;
                                 if (!valid) {
                                     System.err.println("Invalid keyframe for audio segment " + as.getId() + ": time=" + time + ", value=" + value);
                                 }
@@ -3271,32 +3440,52 @@ public class VideoEditingService {
 
                     if (!validKeyframes.isEmpty()) {
                         StringBuilder volumeExpr = new StringBuilder("volume=");
-                        if (validKeyframes.size() == 1) {
-                            double value = ((Number) validKeyframes.get(0).getValue()).doubleValue();
-                            volumeExpr.append(String.format("%.6f", value));
-                        } else {
-                            volumeExpr.append("'");
-                            for (int j = 0; j < validKeyframes.size() - 1; j++) {
-                                Keyframe currentKf = validKeyframes.get(j);
-                                Keyframe nextKf = validKeyframes.get(j + 1);
-                                double currentTime = currentKf.getTime();
-                                double nextTime = nextKf.getTime();
-                                double currentValue = ((Number) currentKf.getValue()).doubleValue();
-                                double nextValue = ((Number) nextKf.getValue()).doubleValue();
+                        double lastValue = ((Number) validKeyframes.get(validKeyframes.size() - 1).getValue()).doubleValue();
+                        double lastTime = validKeyframes.get(validKeyframes.size() - 1).getTime();
 
-                                if (nextTime > currentTime) {
-                                    String progress = String.format("(t-%.6f)/(%.6f-%.6f)", currentTime, nextTime, currentTime);
-                                    String interpolatedValue = String.format("%.6f+(%.6f-%.6f)*min(1,max(0,%s))", currentValue, nextValue, currentValue, progress);
-                                    volumeExpr.append(String.format("if(between(t,%.6f,%.6f),%s,", currentTime, nextTime, interpolatedValue));
+                        volumeExpr.append("'");
+
+                        // Generate conditions for each time range
+                        int conditionCount = 0;
+                        for (int j = 0; j < validKeyframes.size(); j++) {
+                            double startTime, endTime, startValue, endValue;
+
+                            Keyframe currentKf = validKeyframes.get(j);
+                            startTime = currentKf.getTime();
+                            startValue = ((Number) currentKf.getValue()).doubleValue();
+
+                            if (j < validKeyframes.size() - 1) {
+                                Keyframe nextKf = validKeyframes.get(j + 1);
+                                endTime = nextKf.getTime();
+                                endValue = ((Number) nextKf.getValue()).doubleValue();
+                            } else {
+                                endTime = finalTimelineDuration;
+                                endValue = startValue; // Last keyframe value extends to end
+                            }
+
+                            if (startTime < endTime) {
+                                String condition = String.format("between(t,%.6f,%.6f)", startTime, endTime);
+                                String valueExpr;
+                                if (Math.abs(startValue - endValue) < 0.000001) {
+                                    valueExpr = String.format("%.6f", startValue);
+                                } else {
+                                    String progress = String.format("(t-%.6f)/(%.6f-%.6f)", startTime, endTime, startTime);
+                                    valueExpr = String.format("%.6f+(%.6f-%.6f)*min(1,max(0,%s))", startValue, endValue, startValue, progress);
                                 }
+                                volumeExpr.append(String.format("if(%s,%s,", condition, valueExpr));
+                                conditionCount++;
                             }
-                            double lastValue = ((Number) validKeyframes.get(validKeyframes.size() - 1).getValue()).doubleValue();
-                            volumeExpr.append(String.format("%.6f", lastValue));
-                            for (int j = 0; j < validKeyframes.size() - 1; j++) {
-                                volumeExpr.append(")");
-                            }
-                            volumeExpr.append("'");
                         }
+
+                        // Default value
+                        volumeExpr.append(String.format("%.6f", lastValue));
+
+                        // Close all if statements
+                        for (int j = 0; j < conditionCount; j++) {
+                            volumeExpr.append(")");
+                        }
+
+                        volumeExpr.append("'");
                         volumeExpr.append(":eval=frame");
                         filterComplex.append(",").append(volumeExpr);
                         System.out.println("Volume expression for audio segment " + as.getId() + ": " + volumeExpr);
@@ -3366,26 +3555,31 @@ public class VideoEditingService {
             command.add(String.valueOf(fps != null ? fps : 30)); // Fallback to 30 fps if null
             command.add("-y");
             command.add(outputPath);
+        // Save output to temporary file
+        File tempOutputFile = new File(baseDir + "/temp/output_" + System.currentTimeMillis() + ".mp4");
+        command.add("-y");
+        command.add(tempOutputFile.getAbsolutePath());
 
-            System.out.println("FFmpeg command: " + String.join(" ", command));
-            try {
-                executeFFmpegCommand(command);
-            } finally {
-                // Clean up temporary text PNGs
-                for (File tempFile : tempTextFiles) {
-                    if (tempFile.exists()) {
-                        try {
-                            tempFile.delete();
-                            System.out.println("Deleted temporary text PNG: " + tempFile.getAbsolutePath());
-                        } catch (Exception e) {
-                            System.err.println("Failed to delete temporary text PNG " + tempFile.getAbsolutePath() + ": " + e.getMessage());
-                        }
-                    }
-                }
+        System.out.println("FFmpeg command: " + String.join(" ", command));
+        try {
+            executeFFmpegCommand(command);
+            // Upload to Backblaze B2
+            backblazeB2Service.uploadFile(tempOutputFile, outputPath);
+        } catch (B2Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            // Clean up temporary files
+            for (File tempFile : tempInputFiles) {
+                Files.deleteIfExists(tempFile.toPath());
             }
-
-            return outputPath;
+            for (File tempFile : tempTextFiles) {
+                Files.deleteIfExists(tempFile.toPath());
+            }
+            Files.deleteIfExists(tempOutputFile.toPath());
         }
+
+        return outputPath;
+    }
 
         private String generateTextPng(TextSegment ts, File tempDir, int canvasWidth, int canvasHeight) throws IOException {
             // Resolution multiplier for high-quality text (1.5 for 4K, 2.0 for 1080p)
@@ -4061,4 +4255,4 @@ public class VideoEditingService {
             return objectMapper.readValue(project.getElementJson(), new TypeReference<List<Map<String, String>>>() {});
         }
 
-    }
+}
